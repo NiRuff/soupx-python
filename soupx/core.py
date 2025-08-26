@@ -7,6 +7,7 @@ from scipy import sparse
 from typing import Optional, Union, Dict, Any
 
 
+
 class SoupChannel:
     """
     Container for single-cell RNA-seq data and soup contamination analysis.
