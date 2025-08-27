@@ -266,6 +266,7 @@ def _multinomial_method(
 
     observed_counts = sc.filtered_counts
     soup_fractions = sc.soup_profile['est'].values
+    soup_fractions = soup_fractions / soup_fractions.sum()  # FIX: Ensure sums to 1
     contamination_fraction = sc.contamination_fraction
 
     corrected_counts = initial_corrected.copy()

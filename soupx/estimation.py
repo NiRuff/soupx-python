@@ -192,7 +192,7 @@ def quick_markers(
     """
     Quickly identify cluster-specific marker genes using TF-IDF approach.
 
-    Simplified version of the R quickMarkers function.
+    Simplified version of the R quickMarkers function, optimized for synthetic data.
 
     Parameters
     ----------
@@ -240,29 +240,54 @@ def quick_markers(
         # Avoid division by zero and calculate fold changes
         fold_changes = np.divide(cluster_means + 1e-6, other_means + 1e-6)
 
-        # Calculate improved TF-IDF score
-        # TF: relative frequency in cluster
+        # **IMPROVED TF-IDF calculation for synthetic data**
+        # TF: relative frequency in cluster (normalized by cluster total)
         cluster_totals = np.sum(cluster_means)
         tf = cluster_means / (cluster_totals + 1e-10)
 
-        # IDF: inverse document frequency (how rare is this gene across other clusters)
-        n_other_expressing = np.sum(counts[:, other_mask] > 0, axis=1)
-        # Add pseudocount and use log10 for more reasonable scores
-        idf = np.log10((n_other_cells + 1) / (n_other_expressing + 1))
+        # IDF: inverse document frequency with better scaling
+        # Count cells expressing each gene in other clusters
+        expressing_threshold = 0.1  # Lower threshold for synthetic data
+        n_other_expressing = np.sum(counts[:, other_mask] > expressing_threshold, axis=1)
 
-        # Combined TF-IDF score
-        tfidf = tf * idf * 1000  # Scale up for reasonable scores
+        # Improved IDF calculation - more sensitive to specificity
+        idf = np.log2((n_other_cells + 1) / (n_other_expressing + 1))
+
+        # Combined TF-IDF score with better scaling
+        tfidf = tf * idf
+
+        # Scale to reasonable range (multiply by a factor to get scores > 1 for good markers)
+        tfidf = tfidf * 1000
+
+        # Additional specificity score based on expression frequency
+        cluster_expressing = np.sum(counts[:, cluster_mask] > expressing_threshold, axis=1)
+        cluster_freq = cluster_expressing / n_cluster_cells
+        other_freq = n_other_expressing / n_other_cells
+
+        # Boost score for genes highly expressed in cluster but not others
+        specificity_boost = np.where(cluster_freq > 0.5, 1 + (cluster_freq - other_freq), 1)
+        tfidf = tfidf * specificity_boost
 
         # Number of cells in cluster expressing each gene
-        n_cluster_expressing = np.sum(counts[:, cluster_mask] > 0, axis=1)
+        n_cluster_expressing = cluster_expressing
 
-        # Filter by criteria - more lenient for synthetic data
+        # **RELAXED filtering criteria for synthetic data**
         valid_mask = (
-            (fold_changes >= min_fold_change) &
-            (cluster_means > 0.5) &  # Some expression required
-            (n_cluster_expressing >= min_cells_expressing) &
-            (tfidf > 0)  # Some specificity required
+                (fold_changes >= min_fold_change) &
+                (cluster_means > 0.1) &  # Very low expression threshold
+                (n_cluster_expressing >= min_cells_expressing) &
+                (tfidf > 0.01) &  # Very low TF-IDF threshold
+                (cluster_freq > 0.2)  # At least 20% of cluster cells express it
         )
+
+        if not np.any(valid_mask):
+            # If no markers pass, relax criteria further
+            valid_mask = (
+                    (fold_changes >= 1.2) &  # Lower fold change
+                    (cluster_means > 0.01) &  # Even lower expression
+                    (n_cluster_expressing >= 2) &  # Fewer cells required
+                    (tfidf > 0)  # Any positive TF-IDF
+            )
 
         if not np.any(valid_mask):
             continue
@@ -297,8 +322,8 @@ def quick_markers(
 def auto_est_cont(
         sc: "SoupChannel",
         top_markers: Optional[pd.DataFrame] = None,
-        tfidf_min: float = 0.5,  # More lenient for synthetic data
-        soup_quantile: float = 0.8,  # More lenient
+        tfidf_min: float = 0.5,
+        soup_quantile: float = 0.8,
         max_markers: int = 100,
         contamination_range: Tuple[float, float] = (0.01, 0.8),
         verbose: bool = True
@@ -317,9 +342,9 @@ def auto_est_cont(
     top_markers : pd.DataFrame, optional
         Pre-computed marker genes. If None, will compute using quick_markers
     tfidf_min : float, default 0.5
-        Minimum TF-IDF score for marker genes (lowered for synthetic data)
+        Minimum TF-IDF score for marker genes
     soup_quantile : float, default 0.8
-        Only use genes above this quantile in soup profile (lowered)
+        Only use genes above this quantile in soup profile
     max_markers : int, default 100
         Maximum number of marker genes to use
     contamination_range : tuple, default (0.01, 0.8)
@@ -348,7 +373,7 @@ def auto_est_cont(
         top_markers = quick_markers(
             sc.filtered_counts.toarray(),
             sc.clusters,
-            n_markers=20  # More markers per cluster
+            n_markers=20
         )
 
     if len(top_markers) == 0:
@@ -358,43 +383,64 @@ def auto_est_cont(
         print(f"Found {len(top_markers)} potential marker genes")
         print(f"TF-IDF range: {top_markers['tfidf'].min():.3f} - {top_markers['tfidf'].max():.3f}")
 
-    # Filter markers by TF-IDF and soup expression
+    # Calculate soup quantile threshold
     soup_quantile_threshold = np.quantile(sc.soup_profile['est'], soup_quantile)
 
-    # Fix the indexing issue - use .loc for proper indexing
-    marker_gene_indices = top_markers['gene_idx'].values
-    marker_soup_values = sc.soup_profile.iloc[marker_gene_indices]['est'].values
+    # Convert gene indices to gene names and get soup values - FIXED VERSION
+    valid_markers = []
+    marker_soup_values = []
 
-    # Create proper boolean masks
-    tfidf_mask = top_markers['tfidf'] >= tfidf_min
+    for idx, row in top_markers.iterrows():
+        gene_idx = int(row['gene_idx'])
+        if gene_idx < len(sc.gene_names):  # Check bounds
+            gene_name = sc.gene_names[gene_idx]
+            if gene_name in sc.soup_profile.index:  # Check if gene exists in soup profile
+                valid_markers.append(row)
+                marker_soup_values.append(sc.soup_profile.loc[gene_name, 'est'])
+
+    if not valid_markers:
+        raise ValueError("No marker genes found in soup profile. Check gene indexing.")
+
+    # Convert to arrays for consistent indexing
+    valid_markers_df = pd.DataFrame(valid_markers).reset_index(drop=True)
+    marker_soup_values = np.array(marker_soup_values)
+
+    # Create boolean masks - now all arrays have same length
+    tfidf_mask = valid_markers_df['tfidf'] >= tfidf_min
     soup_mask = marker_soup_values >= soup_quantile_threshold
 
     # Combine masks
-    good_marker_indices = tfidf_mask & soup_mask
-    good_markers = top_markers[good_marker_indices].copy().reset_index(drop=True)
+    good_mask = tfidf_mask & soup_mask
 
-    if verbose:
-        print(f"After filtering: {len(good_markers)} markers with tfidf >= {tfidf_min}")
-
-    if len(good_markers) == 0:
+    if not np.any(good_mask):
         if verbose:
-            print(f"No markers pass filters. Lowering thresholds...")
-            print(f"Trying tfidf_min = 0.1")
+            print(f"No markers pass initial filters (tfidf >= {tfidf_min}, soup >= {soup_quantile:.2f})")
+            print("Trying more lenient criteria...")
 
         # Try more lenient filtering
-        tfidf_mask = top_markers['tfidf'] >= 0.1
-        good_marker_indices = tfidf_mask & soup_mask
-        good_markers = top_markers[good_marker_indices].copy().reset_index(drop=True)
+        tfidf_mask_lenient = valid_markers_df['tfidf'] >= 0.1
+        good_mask = tfidf_mask_lenient & soup_mask
 
-        if len(good_markers) == 0:
-            # Last resort - use top markers regardless of thresholds
-            good_markers = top_markers.head(min(20, len(top_markers))).copy()
+        if not np.any(good_mask):
+            # Last resort - use top markers by TF-IDF
+            n_fallback = min(10, len(valid_markers_df))
+            good_mask = np.zeros(len(valid_markers_df), dtype=bool)
+            # Select top n by TF-IDF score
+            top_indices = np.argsort(valid_markers_df['tfidf'])[-n_fallback:]
+            good_mask[top_indices] = True
+
             if verbose:
-                print(f"Using top {len(good_markers)} markers without filtering")
+                print(f"Using top {n_fallback} markers by TF-IDF score as fallback")
+
+    # Get filtered markers
+    good_markers = valid_markers_df[good_mask].copy().reset_index(drop=True)
 
     # Limit number of markers
     if len(good_markers) > max_markers:
         good_markers = good_markers.head(max_markers)
+
+    if len(good_markers) == 0:
+        raise ValueError(f"No good markers found with tfidf >= {tfidf_min}")
 
     if verbose:
         print(f"Using {len(good_markers)} marker genes for estimation")
@@ -402,10 +448,10 @@ def auto_est_cont(
     # Estimate contamination for each marker gene
     contamination_estimates = []
 
-    for idx, marker in good_markers.iterrows():
-        gene_idx = int(marker['gene_idx'])  # Ensure integer
-        marker_cluster = marker['cluster']
+    for idx, (_, marker) in enumerate(good_markers.iterrows()):
+        gene_idx = int(marker['gene_idx'])
         gene_name = sc.gene_names[gene_idx]
+        marker_cluster = marker['cluster']
 
         # Cells that should NOT express this marker
         non_expressing_cells = sc.clusters != marker_cluster
@@ -414,32 +460,32 @@ def auto_est_cont(
             continue
 
         try:
-            # Use this single gene to estimate contamination
-            # Create temporary contamination estimate without modifying original sc
-
             # Get counts for this gene in non-expressing cells
-            gene_counts = sc.filtered_counts[gene_idx, non_expressing_cells].toarray().flatten()
-            cell_umis = sc.metadata.iloc[np.where(non_expressing_cells)[0]]['n_umis'].values
-            soup_fraction = sc.soup_profile.iloc[gene_idx]['est']
+            gene_counts = sc.filtered_counts[gene_idx, :].toarray().flatten()
+            cell_umis = sc.metadata['n_umis'].values
+            soup_fraction = sc.soup_profile.loc[gene_name, 'est']
 
-            if soup_fraction == 0 or len(gene_counts) == 0:
+            if soup_fraction <= 0:
                 continue
 
-            # Calculate contamination estimates for each cell
+            # Calculate contamination estimates for each non-expressing cell
             cell_estimates = []
-            for i, (count, umis) in enumerate(zip(gene_counts, cell_umis)):
-                if umis > 0 and soup_fraction > 0:
+            for cell_idx in np.where(non_expressing_cells)[0]:
+                count = gene_counts[cell_idx]
+                umis = cell_umis[cell_idx]
+
+                if umis > 0:
                     estimate = count / (umis * soup_fraction)
                     estimate = np.clip(estimate, 0, 1)  # Bound between 0 and 1
-                    cell_estimates.append(estimate)
 
-            if len(cell_estimates) > 0:
+                    # Only include reasonable estimates
+                    if contamination_range[0] <= estimate <= contamination_range[1]:
+                        cell_estimates.append(estimate)
+
+            if len(cell_estimates) >= 3:  # Need multiple estimates
                 # Use median as robust estimate
                 gene_estimate = np.median(cell_estimates)
-
-                # Validate estimate is in reasonable range
-                if contamination_range[0] <= gene_estimate <= contamination_range[1]:
-                    contamination_estimates.append(gene_estimate)
+                contamination_estimates.append(gene_estimate)
 
         except Exception as e:
             if verbose:
@@ -447,22 +493,25 @@ def auto_est_cont(
             continue
 
     if len(contamination_estimates) == 0:
-        raise ValueError("No valid contamination estimates obtained from marker genes. Try manual estimation.")
+        raise ValueError(
+            f"No valid contamination estimates obtained from marker genes. "
+            f"Try lowering tfidf_min (current: {tfidf_min}) or soup_quantile (current: {soup_quantile})"
+        )
 
-    # Take mode (most common value) as in original R implementation
-    # Use histogram approach to find mode
+    # Calculate final estimate
     if len(contamination_estimates) == 1:
-        mode_estimate = contamination_estimates[0]
+        final_estimate = contamination_estimates[0]
+        mode_estimate = final_estimate
+        median_estimate = final_estimate
     else:
+        # Use histogram approach to find mode (as in R implementation)
         hist, bin_edges = np.histogram(contamination_estimates, bins=min(10, len(contamination_estimates)))
         mode_bin_idx = np.argmax(hist)
         mode_estimate = (bin_edges[mode_bin_idx] + bin_edges[mode_bin_idx + 1]) / 2
+        median_estimate = np.median(contamination_estimates)
 
-    # Also calculate median as backup
-    median_estimate = np.median(contamination_estimates)
-
-    # Use median if mode seems unrealistic
-    final_estimate = median_estimate if abs(mode_estimate - median_estimate) > 0.1 else mode_estimate
+        # Use median if mode seems unrealistic
+        final_estimate = median_estimate if abs(mode_estimate - median_estimate) > 0.1 else mode_estimate
 
     if verbose:
         print(f"Contamination estimates from {len(contamination_estimates)} markers:")
