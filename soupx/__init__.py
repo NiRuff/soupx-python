@@ -23,7 +23,7 @@ For more advanced usage see individual module documentation.
 """
 
 from .core import SoupChannel
-from .estimation import estimate_soup, calculate_contamination_fraction, auto_est_cont, quick_markers
+from .estimation import estimate_soup, calculate_contamination_fraction, auto_est_cont, quickMarkers
 from .correction import adjust_counts
 
 __version__ = "0.2.0"
@@ -33,7 +33,7 @@ __all__ = [
     "estimate_soup",
     "calculate_contamination_fraction",
     "auto_est_cont",
-    "quick_markers",
+    "quickMarkers",
     "adjust_counts",
 ]
 
