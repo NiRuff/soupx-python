@@ -198,48 +198,101 @@ def _adjust_counts_clustered(
     return corrected_counts
 
 
-def _subtraction_method(
-        sc: "SoupChannel",
-        round_to_int: bool,
-        verbose: bool
-) -> sparse.csr_matrix:
+def _subtraction_method(sc, round_to_int=False, verbose=True, tol=1e-3, max_iterations=1000):
     """
-    Simple subtraction method (equation 5 from SoupX paper).
-    mg,c = ng,c - Nc*ρc*bg
+    Iterative subtraction method that matches R SoupX exactly.
+
+    This implements the same iterative algorithm as R SoupX to ensure
+    exactly the target amount of contamination is removed.
     """
 
     # Get data in convenient form
-    observed_counts = sc.filtered_counts.copy()  # ng,c
-    cell_umis = sc.metadata['n_umis'].values  # Nc
-    contamination_fraction = sc.contamination_fraction  # ρc (global)
-    soup_fractions = sc.soup_profile['est'].values  # bg
+    observed_counts = sc.filtered_counts.copy().astype(float)
+    cell_umis = sc.metadata['n_umis'].values
+    contamination_fraction = sc.contamination_fraction
+    soup_fractions = sc.soup_profile['est'].values
 
-    # Calculate expected contamination counts for each gene in each cell
-    # Expected contamination = Nc * ρc * bg
-    expected_contamination = np.outer(soup_fractions, cell_umis * contamination_fraction)
+    # Calculate target UMIs to remove per cell
+    target_contamination_umis = cell_umis * contamination_fraction
 
-    # Convert to sparse matrix for efficient subtraction
-    expected_contamination_sparse = sparse.csr_matrix(expected_contamination)
+    if verbose:
+        print(f"Target contamination UMIs per cell: mean={target_contamination_umis.mean():.1f}")
 
-    # Subtract contamination: mg,c = ng,c - Nc*ρc*bg
-    corrected_counts = observed_counts - expected_contamination_sparse
+    # Initialize output matrix
+    corrected_counts = observed_counts.copy()
 
-    # Ensure no negative counts
-    corrected_counts.data = np.maximum(corrected_counts.data, 0)
+    # Convert to COO format for easier manipulation of sparse entries
+    coo = corrected_counts.tocoo()
 
-    # Remove explicit zeros to maintain sparsity
+    # Initial subtraction - same as simple method
+    for idx in range(len(coo.data)):
+        gene_idx = coo.row[idx]
+        cell_idx = coo.col[idx]
+
+        # Expected contamination for this gene-cell pair
+        expected_contamination = soup_fractions[gene_idx] * target_contamination_umis[cell_idx]
+
+        # Subtract contamination (don't go below 0)
+        coo.data[idx] = max(0, coo.data[idx] - expected_contamination)
+
+    # Convert back to CSR for efficient column operations
+    corrected_counts = coo.tocsr()
+
+    # Iterative correction to hit targets exactly (like R)
+    for iteration in range(max_iterations):
+        # Calculate how much contamination we've actually removed per cell
+        current_totals = np.array(corrected_counts.sum(axis=0)).flatten()
+        original_totals = np.array(observed_counts.sum(axis=0)).flatten()
+        removed_so_far = original_totals - current_totals
+
+        # How much more do we need to remove per cell?
+        still_to_remove = target_contamination_umis - removed_so_far
+
+        # Check convergence
+        max_error = np.max(np.abs(still_to_remove))
+        if max_error < tol:
+            if verbose:
+                print(f"Converged after {iteration + 1} iterations (max error: {max_error:.6f})")
+            break
+
+        if verbose and iteration % 100 == 0:
+            print(f"Iteration {iteration}: max error = {max_error:.6f}")
+
+        # Apply additional correction where needed
+        coo = corrected_counts.tocoo()
+
+        for idx in range(len(coo.data)):
+            gene_idx = coo.row[idx]
+            cell_idx = coo.col[idx]
+
+            if abs(still_to_remove[cell_idx]) > tol and coo.data[idx] > 0:
+                # Additional contamination to remove from this gene-cell pair
+                additional_removal = soup_fractions[gene_idx] * still_to_remove[cell_idx]
+                coo.data[idx] = max(0, coo.data[idx] - additional_removal)
+
+        corrected_counts = coo.tocsr()
+
+    else:
+        if verbose:
+            print(f"Warning: Did not converge after {max_iterations} iterations")
+
+    # Final cleanup
     corrected_counts.eliminate_zeros()
 
     # Round to integers if requested
     if round_to_int:
         corrected_counts = _stochastic_round(corrected_counts)
 
-    # Report statistics
+    # Report final statistics
     if verbose:
-        original_total = observed_counts.sum()
-        corrected_total = corrected_counts.sum()
-        removed_fraction = 1 - (corrected_total / original_total)
-        print(f"Removed {removed_fraction:.1%} of total counts ({original_total - corrected_total:,} UMIs)")
+        final_totals = np.array(corrected_counts.sum(axis=0)).flatten()
+        final_removed = original_totals - final_totals
+        actual_removal_fraction = np.sum(final_removed) / np.sum(original_totals)
+        expected_removal_fraction = contamination_fraction
+
+        print(f"Expected removal: {expected_removal_fraction:.1%}")
+        print(f"Actual removal: {actual_removal_fraction:.1%}")
+        print(f"Difference: {abs(actual_removal_fraction - expected_removal_fraction):.4f}")
 
     return corrected_counts
 
