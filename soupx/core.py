@@ -1,6 +1,6 @@
 """
 Core SoupChannel class for SoupX implementation.
-Updated with clustering support and additional methods.
+Updated to match R SoupX naming conventions and structure.
 """
 import numpy as np
 import pandas as pd
@@ -12,222 +12,185 @@ class SoupChannel:
     """
     Container for single-cell RNA-seq data and soup contamination analysis.
 
-    Equivalent to R SoupChannel object. Stores:
-    - raw droplet counts (tod = table of droplets)
-    - filtered cell counts (toc = table of counts)
-    - metadata about cells
-    - soup profile (background contamination profile)
-    - contamination fraction estimates
-    - clustering information
+    Matches R SoupChannel object structure with:
+    - tod: table of droplets (raw counts)
+    - toc: table of counts (filtered cells)
+    - metaData: cell metadata (not metadata)
+    - soupProfile: background contamination profile
+    - clusters: clustering information
     """
 
     def __init__(
             self,
-            raw_counts: sparse.csr_matrix,
-            filtered_counts: sparse.csr_matrix,
-            raw_barcodes: Optional[np.ndarray] = None,
-            filtered_barcodes: Optional[np.ndarray] = None,
-            gene_names: Optional[np.ndarray] = None,
-            metadata: Optional[pd.DataFrame] = None,
-            calc_soup_profile: bool = True,
+            tod: sparse.csr_matrix,
+            toc: sparse.csr_matrix,
+            metaData: Optional[pd.DataFrame] = None,
+            calcSoupProfile: bool = True,
             **kwargs
     ):
         """
-        Initialize SoupChannel object.
+        Initialize SoupChannel object matching R structure.
 
         Parameters
         ----------
-        raw_counts : sparse matrix
-            Raw droplet counts matrix (genes x droplets), includes empty droplets
-        filtered_counts : sparse matrix
-            Filtered cell counts matrix (genes x cells), cellranger filtered
-        raw_barcodes : array-like, optional
-            Barcode names for raw droplets
-        filtered_barcodes : array-like, optional
-            Barcode names for filtered cells
-        gene_names : array-like, optional
-            Gene names/IDs
-        metadata : DataFrame, optional
-            Cell metadata with barcodes as index
-        calc_soup_profile : bool, default True
-            Whether to automatically calculate soup profile
-        **kwargs : dict
-            Additional metadata to store
+        tod : sparse.csr_matrix
+            Table of droplets - raw counts (genes x droplets)
+        toc : sparse.csr_matrix
+            Table of counts - filtered cells (genes x cells)
+        metaData : pd.DataFrame, optional
+            Meta data for cells with rownames matching column names of toc
+        calcSoupProfile : bool, default True
+            Whether to calculate soup profile automatically
+        **kwargs
+            Additional named parameters to store
         """
+        # Store with R naming conventions
+        self.tod = tod
+        self.toc = toc
+        self.raw_counts = tod  # Keep for backwards compatibility
+        self.filtered_counts = toc  # Keep for backwards compatibility
 
-        # Input validation
-        if raw_counts.shape[0] != filtered_counts.shape[0]:
-            raise ValueError("Raw and filtered counts must have same number of genes")
+        # Gene information
+        self.n_genes = toc.shape[0]
+        self.n_cells = toc.shape[1]
 
-        # Core count matrices
-        self.raw_counts = raw_counts.tocsr()  # tod in R
-        self.filtered_counts = filtered_counts.tocsr()  # toc in R
+        # Initialize metaData with R naming
+        if metaData is None:
+            # Create default metadata with nUMIs column (not n_umis)
+            self.metaData = pd.DataFrame({
+                'nUMIs': np.array(toc.sum(axis=0)).flatten()
+            }, index=[f"cell_{i}" for i in range(self.n_cells)])
+        else:
+            self.metaData = metaData
+            # Ensure nUMIs column exists
+            if 'nUMIs' not in self.metaData.columns:
+                self.metaData['nUMIs'] = np.array(toc.sum(axis=0)).flatten()
 
-        # Dimensions
-        self.n_genes = raw_counts.shape[0]
-        self.n_raw_droplets = raw_counts.shape[1]
-        self.n_cells = filtered_counts.shape[1]
+        # Backwards compatibility
+        self.metadata = self.metaData
 
-        # Identifiers
-        self.gene_names = self._validate_names(gene_names, self.n_genes, 'gene')
-        self.raw_barcodes = self._validate_names(raw_barcodes, self.n_raw_droplets, 'raw_barcode')
-        self.filtered_barcodes = self._validate_names(filtered_barcodes, self.n_cells, 'cell_barcode')
-
-        # Create metadata DataFrame
-        self.metadata = self._init_metadata(metadata)
-
-        # Soup analysis results (will be filled later)
-        self.soup_profile = None
-        self.contamination_fraction = None
-
-        # Clustering information (NEW)
+        # Initialize other attributes
+        self.soupProfile = None
+        self.soup_profile = None  # Backwards compatibility
         self.clusters = None
+        self.DR = None  # Dimension reduction
+        self.fit = {}  # Store fitting results
 
-        # Reduced dimension coordinates (for plotting)
-        self.reduced_dims = None
+        # Store contamination fraction in metaData as 'rho'
+        if 'rho' not in self.metaData.columns:
+            self.metaData['rho'] = None
 
-        # Store additional parameters
-        self.params = kwargs
+        # Store any additional parameters
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
         # Calculate soup profile if requested
-        if calc_soup_profile:
-            from .estimation import estimate_soup
-            self = estimate_soup(self)
+        if calcSoupProfile:
+            self._calculate_soup_profile()
 
-    def _validate_names(self, names: Optional[np.ndarray], expected_length: int, name_type: str) -> np.ndarray:
-        """Validate and create name arrays."""
-        if names is None:
-            return np.array([f"{name_type}_{i}" for i in range(expected_length)])
-
-        names = np.asarray(names)
-        if len(names) != expected_length:
-            raise ValueError(f"{name_type} names length ({len(names)}) doesn't match expected ({expected_length})")
-        return names
-
-    def _init_metadata(self, metadata: Optional[pd.DataFrame]) -> pd.DataFrame:
-        """Initialize cell metadata DataFrame."""
-        # Create basic metadata
-        base_metadata = pd.DataFrame(
-            index=self.filtered_barcodes,
-            data={
-                'n_umis': np.array(self.filtered_counts.sum(axis=0)).flatten(),
-                'n_genes': np.array((self.filtered_counts > 0).sum(axis=0)).flatten()
-            }
+    def _calculate_soup_profile(self):
+        """Calculate the soup profile from empty droplets."""
+        # This matches R's estimateSoup function behavior
+        empty_droplet_threshold = np.percentile(
+            np.array(self.tod.sum(axis=0)).flatten(), 90
         )
+        empty_droplets = np.array(self.tod.sum(axis=0)).flatten() < empty_droplet_threshold
 
-        # Merge with provided metadata if available
-        if metadata is not None:
-            # Ensure metadata index matches cell barcodes
-            if not metadata.index.equals(pd.Index(self.filtered_barcodes)):
-                print("Warning: metadata index doesn't match cell barcodes")
+        if np.sum(empty_droplets) > 0:
+            soup_counts = np.array(self.tod[:, empty_droplets].sum(axis=1)).flatten()
+            total_soup = np.sum(soup_counts)
 
-            # Merge, keeping base_metadata for overlapping columns
-            for col in metadata.columns:
-                if col not in base_metadata.columns:
-                    base_metadata[col] = metadata[col]
-
-        return base_metadata
+            self.soupProfile = pd.DataFrame({
+                'est': soup_counts / total_soup if total_soup > 0 else np.zeros(self.n_genes),
+                'counts': soup_counts
+            })
+            self.soup_profile = self.soupProfile  # Backwards compatibility
 
     @property
-    def raw_umi_counts(self) -> np.ndarray:
-        """Get UMI counts for all raw droplets."""
-        return np.array(self.raw_counts.sum(axis=0)).flatten()
+    def contamination_fraction(self):
+        """Get contamination fraction (rho) - for backwards compatibility."""
+        if 'rho' in self.metaData.columns:
+            # Return global rho if all values are the same
+            unique_rhos = self.metaData['rho'].dropna().unique()
+            if len(unique_rhos) == 1:
+                return unique_rhos[0]
+            elif len(unique_rhos) > 1:
+                # Return mean if cell-specific
+                return self.metaData['rho'].mean()
+        return None
 
-    def set_contamination_fraction(self, contamination_fraction: float):
+    @contamination_fraction.setter
+    def contamination_fraction(self, value):
+        """Set contamination fraction (rho) - for backwards compatibility."""
+        self.metaData['rho'] = value
+
+    def set_contamination_fraction(self, contFrac, forceAccept=False):
         """
-        Set global contamination fraction for all cells.
+        Set contamination fraction matching R's setContaminationFraction.
 
         Parameters
         ----------
-        contamination_fraction : float
-            Fraction of UMIs that are contamination (0-1)
+        contFrac : float or dict
+            Contamination fraction (0-1). Can be constant or cell-specific.
+        forceAccept : bool
+            Allow very high contamination fractions with warning
         """
-        if not 0 <= contamination_fraction <= 1:
-            raise ValueError("Contamination fraction must be between 0 and 1")
+        # Validation matching R behavior
+        if isinstance(contFrac, (int, float)):
+            if contFrac > 1:
+                raise ValueError("Contamination fraction greater than 1 detected. This is impossible.")
+            if contFrac > 0.5:
+                if forceAccept:
+                    print(f"Extremely high contamination estimated ({contFrac:.2g}). Proceeding with forceAccept=TRUE.")
+                else:
+                    raise ValueError(f"Extremely high contamination estimated ({contFrac:.2g}). "
+                                   "Set forceAccept=TRUE to proceed.")
+            elif contFrac > 0.3:
+                print(f"Warning: Estimated contamination is very high ({contFrac:.2g}).")
 
-        self.contamination_fraction = contamination_fraction
+            self.metaData['rho'] = contFrac
+        else:
+            # Cell-specific contamination
+            for cell_id, rho in contFrac.items():
+                if cell_id in self.metaData.index:
+                    self.metaData.loc[cell_id, 'rho'] = rho
 
-        # Also store per-cell contamination in metadata (all same value)
-        self.metadata['rho'] = contamination_fraction
-
-        print(f"Set contamination fraction to {contamination_fraction:.3f}")
-
-    def set_clusters(self, clusters: Union[np.ndarray, pd.Series, Dict], cluster_column: str = 'clusters'):
+    def setClusters(self, clusters):
         """
-        Set clustering information for cells.
+        Set clustering information matching R's setClusters.
 
         Parameters
         ----------
         clusters : array-like or dict
-            Cluster assignments for each cell. Can be:
-            - Array/series with same length as number of cells
-            - Dict mapping cell barcodes to cluster IDs
-        cluster_column : str, default 'clusters'
-            Column name to store clusters in metadata
+            Cluster assignments for cells
         """
-        if isinstance(clusters, dict):
-            # Map from barcodes to cluster IDs
-            cluster_array = np.array([clusters.get(bc, -1) for bc in self.filtered_barcodes])
+        if hasattr(clusters, '__len__'):
+            if len(clusters) != self.n_cells:
+                raise ValueError("Invalid cluster specification. Length must match number of cells.")
+
+            # Convert to string to match R behavior
+            self.metaData['clusters'] = [str(c) for c in clusters]
+            self.clusters = np.array([str(c) for c in clusters])
         else:
-            cluster_array = np.asarray(clusters)
+            raise ValueError("Invalid cluster specification.")
 
-        if len(cluster_array) != self.n_cells:
-            raise ValueError(f"Clusters length ({len(cluster_array)}) doesn't match number of cells ({self.n_cells})")
+        # Check for NAs
+        if pd.isna(self.metaData['clusters']).any():
+            raise ValueError("NAs found in cluster names.")
 
-        self.clusters = cluster_array
-        self.metadata[cluster_column] = cluster_array
-
-        n_clusters = len(np.unique(cluster_array[cluster_array >= 0]))
-        print(f"Set {n_clusters} clusters for {self.n_cells} cells")
-
-    def set_reduced_dims(self, coords: np.ndarray, coord_names: Optional[list] = None):
+    def setSoupProfile(self, soupProfile):
         """
-        Set reduced dimension coordinates (e.g., UMAP, tSNE).
+        Manually set soup profile matching R's setSoupProfile.
 
         Parameters
         ----------
-        coords : array-like, shape (n_cells, n_dims)
-            Reduced dimension coordinates
-        coord_names : list, optional
-            Names for coordinate dimensions
+        soupProfile : pd.DataFrame
+            DataFrame with 'est' and 'counts' columns
         """
-        coords = np.asarray(coords)
-        if coords.shape[0] != self.n_cells:
-            raise ValueError(f"Coordinates shape ({coords.shape}) doesn't match number of cells ({self.n_cells})")
+        if 'est' not in soupProfile.columns:
+            raise ValueError("est column missing from soupProfile")
+        if 'counts' not in soupProfile.columns:
+            raise ValueError("counts column missing from soupProfile")
 
-        if coord_names is None:
-            coord_names = [f"dim_{i+1}" for i in range(coords.shape[1])]
-
-        self.reduced_dims = pd.DataFrame(
-            coords,
-            index=self.filtered_barcodes,
-            columns=coord_names
-        )
-
-        # Also add to metadata
-        for i, name in enumerate(coord_names):
-            self.metadata[name] = coords[:, i]
-
-    def __repr__(self):
-        """String representation of SoupChannel."""
-        lines = [
-            f"SoupChannel object",
-            f"  {self.n_genes} genes x {self.n_cells} cells",
-            f"  {self.n_raw_droplets} total droplets ({self.n_raw_droplets - self.n_cells} empty)",
-        ]
-
-        if self.soup_profile is not None:
-            lines.append(f"  Soup profile: estimated")
-        else:
-            lines.append(f"  Soup profile: not estimated")
-
-        if self.contamination_fraction is not None:
-            lines.append(f"  Contamination fraction: {self.contamination_fraction:.3f}")
-        else:
-            lines.append(f"  Contamination fraction: not set")
-
-        if self.clusters is not None:
-            n_clusters = len(np.unique(self.clusters[self.clusters >= 0]))
-            lines.append(f"  Clusters: {n_clusters} clusters")
-
-        return "\n".join(lines)
+        self.soupProfile = soupProfile
+        self.soup_profile = soupProfile  # Backwards compatibility

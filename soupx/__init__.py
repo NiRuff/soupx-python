@@ -4,136 +4,125 @@ SoupX Python Implementation
 A Python port of the SoupX R package for removing ambient RNA contamination
 from droplet-based single-cell RNA sequencing data.
 
-Basic usage:
-    import soupx
-
-    # Create SoupChannel from raw and filtered count matrices
-    sc = soupx.SoupChannel(raw_counts, filtered_counts)
-
-    # Manual workflow
-    sc.set_contamination_fraction(0.1)  # 10% contamination
-    corrected_counts = soupx.adjust_counts(sc)
-
-    # Automated workflow (requires clustering)
-    sc.set_clusters(cluster_labels)
-    sc = soupx.auto_est_cont(sc)  # Automatically estimate contamination
-    corrected_counts = soupx.adjust_counts(sc)
-
-For more advanced usage see individual module documentation.
+This implementation mirrors the R package behavior exactly.
 """
 
 from .core import SoupChannel
-from .estimation import estimate_soup, calculate_contamination_fraction, auto_est_cont, quickMarkers
-from .correction import adjust_counts
+from .estimation import (
+    autoEstCont,
+    estimateNonExpressingCells,
+    quickMarkers
+)
+from .correction import adjustCounts
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
+# R-compatible naming (primary interface)
 __all__ = [
     "SoupChannel",
-    "estimate_soup",
-    "calculate_contamination_fraction",
-    "auto_est_cont",
+    "adjustCounts",
+    "autoEstCont",
+    "estimateNonExpressingCells",
     "quickMarkers",
-    "adjust_counts",
 ]
 
 
-# Convenience function for the most common workflow
-def remove_ambient_rna(
-        raw_counts,
-        filtered_counts,
-        contamination_fraction=None,
-        non_expressed_genes=None,
-        clusters=None,
-        **kwargs
-):
+# Convenience functions for Python users (snake_case aliases)
+def adjust_counts(*args, **kwargs):
+    """Python-style alias for adjustCounts."""
+    return adjustCounts(*args, **kwargs)
+
+
+def auto_est_cont(*args, **kwargs):
+    """Python-style alias for autoEstCont."""
+    return autoEstCont(*args, **kwargs)
+
+
+def estimate_non_expressing_cells(*args, **kwargs):
+    """Python-style alias for estimateNonExpressingCells."""
+    return estimateNonExpressingCells(*args, **kwargs)
+
+
+def quick_markers(*args, **kwargs):
+    """Python-style alias for quickMarkers."""
+    return quickMarkers(*args, **kwargs)
+
+
+def load10X(dataDir, **kwargs):
     """
-    Convenience function for the standard SoupX workflow.
+    Load 10X data from cellranger output directory.
+    Mimics R's load10X function.
 
     Parameters
     ----------
-    raw_counts : sparse matrix
-        Raw droplet counts (genes x droplets)
-    filtered_counts : sparse matrix
-        Filtered cell counts (genes x cells)
-    contamination_fraction : float, optional
-        Manual contamination fraction (0-1). If None, will attempt automated estimation.
-    non_expressed_genes : list, optional
-        List of genes to use for contamination estimation (manual approach)
-    clusters : array-like, optional
-        Cluster assignments for automated contamination estimation
+    dataDir : str
+        Path to cellranger outs folder
     **kwargs
-        Additional arguments passed to SoupChannel constructor
+        Additional arguments passed to SoupChannel
 
     Returns
     -------
-    sparse matrix
-        Corrected count matrix
+    SoupChannel
+        Initialized SoupChannel object
     """
+    import scanpy as sc
+    import os
+    from pathlib import Path
 
-    # Create SoupChannel
-    sc = SoupChannel(raw_counts, filtered_counts, **kwargs)
+    data_path = Path(dataDir)
 
-    # Set clustering if provided
-    if clusters is not None:
-        sc.set_clusters(clusters)
-
-    # Estimate contamination fraction
-    if contamination_fraction is not None:
-        # Manual contamination fraction
-        sc.set_contamination_fraction(contamination_fraction)
-    elif non_expressed_genes is not None:
-        # Manual estimation using specific genes
-        sc = calculate_contamination_fraction(sc, non_expressed_genes)
-    elif clusters is not None:
-        # Automated estimation using clustering
-        sc = auto_est_cont(sc)
+    # Check for different cellranger output structures
+    if (data_path / "filtered_feature_bc_matrix").exists():
+        # cellranger v3+
+        toc = sc.read_10x_mtx(data_path / "filtered_feature_bc_matrix")
+        tod = sc.read_10x_mtx(data_path / "raw_feature_bc_matrix")
+    elif (data_path / "filtered_gene_bc_matrices").exists():
+        # cellranger v2
+        # Find genome folder
+        genome_dir = list((data_path / "filtered_gene_bc_matrices").iterdir())[0]
+        toc = sc.read_10x_mtx(data_path / "filtered_gene_bc_matrices" / genome_dir.name)
+        tod = sc.read_10x_mtx(data_path / "raw_gene_bc_matrices" / genome_dir.name)
     else:
-        raise ValueError(
-            "Must provide either contamination_fraction, non_expressed_genes, or clusters"
-        )
+        raise ValueError(f"Could not find 10X data in {dataDir}")
 
-    # Correct counts
-    return adjust_counts(sc)
+    # Convert to sparse CSR matrices
+    toc_sparse = toc.X.T.tocsr()  # Transpose to genes x cells
+    tod_sparse = tod.X.T.tocsr()
 
+    # Create metadata
+    metaData = pd.DataFrame({
+        'nUMIs': np.array(toc_sparse.sum(axis=0)).flatten()
+    }, index=toc.obs_names)
 
-# Convenience function for automated workflow
-def auto_remove_ambient_rna(
-        raw_counts,
-        filtered_counts,
-        clusters,
-        **kwargs
-):
-    """
-    Simplified convenience function for fully automated workflow.
-
-    Parameters
-    ----------
-    raw_counts : sparse matrix
-        Raw droplet counts (genes x droplets)
-    filtered_counts : sparse matrix
-        Filtered cell counts (genes x cells)
-    clusters : array-like
-        Cluster assignments for each cell
-    **kwargs
-        Additional arguments passed to SoupChannel constructor
-
-    Returns
-    -------
-    tuple
-        (corrected_counts, soup_channel) - corrected matrix and SoupChannel object
-    """
+    # Try to load clusters if available
+    clusters_path = data_path / "analysis" / "clustering" / "graphclust" / "clusters.csv"
+    if clusters_path.exists():
+        import pandas as pd
+        clusters_df = pd.read_csv(clusters_path)
+        # Match barcodes
+        if 'Barcode' in clusters_df.columns and 'Cluster' in clusters_df.columns:
+            cluster_dict = dict(zip(clusters_df['Barcode'], clusters_df['Cluster']))
+            metaData['clusters'] = [str(cluster_dict.get(bc, '0')) for bc in toc.obs_names]
 
     # Create SoupChannel
-    sc = SoupChannel(raw_counts, filtered_counts, **kwargs)
+    sc_obj = SoupChannel(
+        tod=tod_sparse,
+        toc=toc_sparse,
+        metaData=metaData,
+        **kwargs
+    )
 
-    # Set clustering
-    sc.set_clusters(clusters)
+    # Store gene names if available
+    if hasattr(toc, 'var_names'):
+        sc_obj.gene_names = toc.var_names.tolist()
 
-    # Automatically estimate contamination
-    sc = auto_est_cont(sc)
+    return sc_obj
 
-    # Apply correction
-    corrected_counts = adjust_counts(sc)
 
-    return corrected_counts, sc
+# Backwards compatibility
+from .estimation import estimate_soup, calculate_contamination_fraction
+from .correction import adjust_counts as _adjust_counts_old
+
+# Map old function names
+estimate_soup = lambda sc: sc._calculate_soup_profile() if hasattr(sc, '_calculate_soup_profile') else None
+calculate_contamination_fraction = autoEstCont
