@@ -69,31 +69,33 @@ def autoEstCont(
     # Get soup profile ordered by expression
     soupProf = sc.soupProfile.sort_values('est', ascending=False)
     soupMin = np.quantile(soupProf['est'].values, soupQuantile)
+    tgts = soupProf.index[soupProf['est'] > soupMin].tolist()  # Define tgts here
 
     # Find or use provided markers
     if topMarkers is None:
         # Get markers using quickMarkers with gene names
         gene_names = sc.gene_names if hasattr(sc, 'gene_names') else list(sc.soupProfile.index)
-
         mrks = quickMarkers(sc.toc, clusters, N=None, verbose=verbose,
-                            gene_names=gene_names)
-
+                            gene_names=gene_names, expressCut=0.9)  # Pass expressCut=0.9
         # Keep only most specific entry per gene
         mrks = mrks.sort_values(['gene', 'tfidf'], ascending=[True, False])
         mrks = mrks[~mrks.duplicated(subset='gene', keep='first')]
-
         # Order by tfidf
         mrks = mrks.sort_values('tfidf', ascending=False)
-
         # Apply tfidf cutoff
         mrks = mrks[mrks['tfidf'] > tfidfMin]
+        print("Top 20 markers after sorting and filtering:")
+        print(mrks.head(20))
     else:
         mrks = topMarkers
 
     # Filter to genes highly expressed in soup
-    tgts = soupProf.index[soupProf['est'] > soupMin].tolist()
     filtPass = mrks[mrks['gene'].isin(tgts)]
     tgts = filtPass.head(maxMarkers)['gene'].tolist()
+    print("\nGenes passing soup quantile filter:")
+    print(tgts[:20])
+    print("\nNumber of genes passing both filters:")
+    print(len(filtPass))
 
     if verbose:
         print(f"{len(mrks)} genes passed tf-idf cut-off and {len(filtPass)} soup quantile filter. "
@@ -315,6 +317,7 @@ def quickMarkers(
         clusters: np.ndarray,
         N: Optional[int] = 10,
         FDR: float = 0.01,
+        expressCut = 0.9,
         verbose: bool = True,
         gene_names: Optional[list] = None
 ) -> pd.DataFrame:
@@ -365,9 +368,10 @@ def quickMarkers(
         cluster_counts = toc[:, cluster_mask]
         global_counts = toc
 
-        # Cells expressing each gene
-        cells_expressing_cluster = np.array((cluster_counts > 0).sum(axis=1)).flatten()
-        cells_expressing_global = np.array((global_counts > 0).sum(axis=1)).flatten()
+        # Binarize counts to match R (use expressCut=0.9 if needed, else >0)
+        expressCut = expressCut  # Match R's default (expressCut=0.9 if specified)
+        cells_expressing_cluster = np.array((cluster_counts > expressCut).sum(axis=1)).flatten()
+        cells_expressing_global = np.array((global_counts > expressCut).sum(axis=1)).flatten()
 
         # Gene frequencies
         freq_cluster = cells_expressing_cluster / n_cells_cluster
@@ -437,6 +441,10 @@ def estimate_soup(sc: "SoupChannel") -> pd.DataFrame:
     For backwards compatibility.
     """
     sc._calculate_soup_profile()
+
+    # Normalize soup profile to match R (if not already normalized)
+    sc.soupProfile['est'] = sc.soupProfile['counts'] / sc.soupProfile['counts'].sum()
+
     return sc.soupProfile
 
 
