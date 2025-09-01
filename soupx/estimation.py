@@ -72,8 +72,11 @@ def autoEstCont(
 
     # Find or use provided markers
     if topMarkers is None:
-        # Get markers using quickMarkers with N=Inf behavior
-        mrks = quickMarkers(sc.toc, clusters, N=None, verbose=verbose)
+        # Get markers using quickMarkers with gene names
+        gene_names = sc.gene_names if hasattr(sc, 'gene_names') else list(sc.soupProfile.index)
+
+        mrks = quickMarkers(sc.toc, clusters, N=None, verbose=verbose,
+                            gene_names=gene_names)
 
         # Keep only most specific entry per gene
         mrks = mrks.sort_values(['gene', 'tfidf'], ascending=[True, False])
@@ -232,11 +235,22 @@ def estimateNonExpressingCells(
     # Get gene indices
     gene_indices = []
     for gene in nonExpressedGeneList:
-        if gene in sc.soupProfile.index:
-            gene_indices.append(sc.soupProfile.index.get_loc(gene))
+        try:
+            if hasattr(sc.soupProfile, 'index'):
+                gene_idx = sc.soupProfile.index.get_loc(gene)
+                gene_indices.append(gene_idx)
+            else:
+                # If no index, assume gene is an integer index
+                gene_indices.append(int(gene))
+        except (KeyError, ValueError):
+            if verbose:
+                print(f"Warning: Gene {gene} not found in data")
+            continue
 
     if len(gene_indices) == 0:
-        raise ValueError("None of the specified genes found in data")
+        if verbose:
+            print("Warning: None of the specified genes found in data")
+        return use_cells
 
     # Test each cluster
     for cluster_id in unique_clusters:
@@ -296,13 +310,13 @@ def estimateNonExpressingCells(
 
     return use_cells
 
-
 def quickMarkers(
         toc: sparse.csr_matrix,
         clusters: np.ndarray,
         N: Optional[int] = 10,
         FDR: float = 0.01,
-        verbose: bool = True
+        verbose: bool = True,
+        gene_names: Optional[list] = None
 ) -> pd.DataFrame:
     """
     Find marker genes using tf-idf method.
@@ -320,6 +334,8 @@ def quickMarkers(
         False discovery rate threshold
     verbose : bool
         Print progress
+    gene_names : list, optional
+        List of gene names. If None, uses indices
 
     Returns
     -------
@@ -328,6 +344,9 @@ def quickMarkers(
     """
     unique_clusters = np.unique(clusters)
     n_genes = toc.shape[0]
+
+    if gene_names is None:
+        gene_names = [f"gene_{i}" for i in range(n_genes)]
 
     if verbose:
         print(f"Finding markers for {len(unique_clusters)} clusters")
@@ -347,37 +366,31 @@ def quickMarkers(
         global_counts = toc
 
         # Cells expressing each gene
-        cells_expressing_cluster = (cluster_counts > 0).sum(axis=1).A.flatten()
-        cells_expressing_global = (global_counts > 0).sum(axis=1).A.flatten()
+        cells_expressing_cluster = np.array((cluster_counts > 0).sum(axis=1)).flatten()
+        cells_expressing_global = np.array((global_counts > 0).sum(axis=1)).flatten()
 
         # Gene frequencies
         freq_cluster = cells_expressing_cluster / n_cells_cluster
         freq_global = cells_expressing_global / n_cells_total
 
         # Calculate tf-idf scores
-        # tf = frequency in cluster
-        # idf = -log(frequency globally)
-        # Avoid log(0)
         freq_global_safe = np.maximum(freq_global, 1e-10)
-        tfidf_scores = freq_cluster * (-np.log(freq_global_safe))
+        idf = np.log(n_cells_total / freq_global_safe)
+        tfidf_scores = freq_cluster * idf
 
         # Statistical test for enrichment (hypergeometric)
         p_values = []
         for gene_idx in range(n_genes):
-            # Hypergeometric test
-            # Success in population (cells expressing globally)
             M = n_cells_total
             n = cells_expressing_global[gene_idx]
-            # Sample size (cluster size)
             N_sample = n_cells_cluster
-            # Successes in sample (cells in cluster expressing)
             k = cells_expressing_cluster[gene_idx]
 
             if n == 0 or k == 0:
                 p_values.append(1.0)
             else:
                 # One-sided test: over-representation
-                p_val = 1 - stats.hypergeom.cdf(k - 1, M, n, N_sample)
+                p_val = stats.hypergeom.sf(k - 1, M, n, N_sample)
                 p_values.append(p_val)
 
         # FDR correction
@@ -397,10 +410,10 @@ def quickMarkers(
         if N is not None and len(marker_indices) > N:
             marker_indices = marker_indices[:N]
 
-        # Store markers
+        # Store markers with gene names
         for gene_idx in marker_indices:
             markers.append({
-                'gene': gene_idx,  # Would need gene names from sc
+                'gene': gene_names[gene_idx],
                 'cluster': cluster_id,
                 'tfidf': tfidf_scores[gene_idx],
                 'geneFrequency': freq_cluster[gene_idx],

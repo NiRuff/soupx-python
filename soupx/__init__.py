@@ -7,6 +7,10 @@ from droplet-based single-cell RNA sequencing data.
 This implementation mirrors the R package behavior exactly.
 """
 
+import numpy as np
+import pandas as pd
+from scipy import sparse
+
 from .core import SoupChannel
 from .estimation import (
     autoEstCont,
@@ -97,7 +101,6 @@ def load10X(dataDir, **kwargs):
     # Try to load clusters if available
     clusters_path = data_path / "analysis" / "clustering" / "graphclust" / "clusters.csv"
     if clusters_path.exists():
-        import pandas as pd
         clusters_df = pd.read_csv(clusters_path)
         # Match barcodes
         if 'Barcode' in clusters_df.columns and 'Cluster' in clusters_df.columns:
@@ -115,14 +118,22 @@ def load10X(dataDir, **kwargs):
     # Store gene names if available
     if hasattr(toc, 'var_names'):
         sc_obj.gene_names = toc.var_names.tolist()
+        # Set soup profile index to gene names
+        if sc_obj.soupProfile is not None:
+            sc_obj.soupProfile.index = sc_obj.gene_names
 
     return sc_obj
 
 
-# Backwards compatibility
-from .estimation import estimate_soup, calculate_contamination_fraction
-from .correction import adjust_counts as _adjust_counts_old
+# Backwards compatibility - simplified
+def estimate_soup(sc):
+    """Estimate soup profile from empty droplets."""
+    if hasattr(sc, '_calculate_soup_profile'):
+        sc._calculate_soup_profile()
+    return sc.soupProfile
 
-# Map old function names
-estimate_soup = lambda sc: sc._calculate_soup_profile() if hasattr(sc, '_calculate_soup_profile') else None
-calculate_contamination_fraction = autoEstCont
+
+def calculate_contamination_fraction(sc, non_expressed_genes, clusters=None):
+    """Simple contamination estimation for backwards compatibility."""
+    # Just call autoEstCont with defaults
+    return autoEstCont(sc, verbose=False)
