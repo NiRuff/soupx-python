@@ -95,22 +95,41 @@ class SoupChannel:
             self._calculate_soup_profile()
 
     def _calculate_soup_profile(self):
-        """Calculate the soup profile from empty droplets."""
-        # This matches R's estimateSoup function behavior
-        empty_droplet_threshold = np.percentile(
-            np.array(self.tod.sum(axis=0)).flatten(), 90
-        )
-        empty_droplets = np.array(self.tod.sum(axis=0)).flatten() < empty_droplet_threshold
+        """Calculate the soup profile from empty droplets - FIXED to match R."""
+        # Get UMI counts per droplet
+        droplet_umis = np.array(self.tod.sum(axis=0)).flatten()
+
+        # CRITICAL FIX: Match R's default soupRange = c(0, 100)
+        # This means > 0 AND < 100, not just < 100
+        empty_droplets = (droplet_umis > 0) & (droplet_umis < 100)
 
         if np.sum(empty_droplets) > 0:
             soup_counts = np.array(self.tod[:, empty_droplets].sum(axis=1)).flatten()
             total_soup = np.sum(soup_counts)
 
+            # FIX: Check if gene_names is not None, not its truthiness
+            if self.gene_names is not None:
+                gene_index = self.gene_names
+            else:
+                gene_index = [f"Gene_{i:05d}" for i in range(self.n_genes)]
+
             self.soupProfile = pd.DataFrame({
                 'est': soup_counts / total_soup if total_soup > 0 else np.zeros(self.n_genes),
                 'counts': soup_counts
-            }, index=self.gene_names)  # Use gene names as index
-            self.soup_profile = self.soupProfile  # Backwards compatibility
+            }, index=gene_index)
+        else:
+            # No droplets in range
+            if self.gene_names is not None:
+                gene_index = self.gene_names
+            else:
+                gene_index = [f"Gene_{i:05d}" for i in range(self.n_genes)]
+
+            self.soupProfile = pd.DataFrame({
+                'est': np.zeros(self.n_genes),
+                'counts': np.zeros(self.n_genes)
+            }, index=gene_index)
+
+        self.soup_profile = self.soupProfile  # Backwards compatibility
 
     @property
     def contamination_fraction(self):
@@ -201,35 +220,30 @@ class SoupChannel:
         self.soupProfile = soupProfile
         self.soup_profile = soupProfile  # Backwards compatibility
 
-    def _calculate_soup_profile_with_range(self, soup_range=(0, 100)):
-            """
-            Calculate the soup profile from empty droplets within UMI range.
-            Matches R's estimateSoup function behavior.
+    def setDR(self, DR, reductName=None):
+        """
+        Set dimension reduction matching R's setDR.
 
-            Parameters
-            ----------
-            soup_range : tuple
-                (min, max) UMI counts for droplets to use for soup estimation
-            """
-            # Get UMI counts per droplet
-            droplet_umis = np.array(self.tod.sum(axis=0)).flatten()
+        Parameters
+        ----------
+        DR : pd.DataFrame or array-like
+            Dimension reduction coordinates (e.g., tSNE, UMAP)
+        reductName : str, optional
+            Name for the reduction
+        """
+        DR = pd.DataFrame(DR)
+        if DR.shape[1] < 2:
+            raise ValueError("Need at least two reduced dimensions.")
 
-            # Find droplets in range (excluding endpoints like R)
-            empty_droplets = (droplet_umis > soup_range[0]) & (droplet_umis < soup_range[1])
+        if DR.shape[0] != self.n_cells:
+            raise ValueError("DR rows must match number of cells.")
 
-            if np.sum(empty_droplets) > 0:
-                soup_counts = np.array(self.tod[:, empty_droplets].sum(axis=1)).flatten()
-                total_soup = np.sum(soup_counts)
+        # Add to metadata
+        if reductName:
+            col_names = [f"{reductName}_1", f"{reductName}_2"]
+        else:
+            col_names = ["DR_1", "DR_2"]
 
-                self.soupProfile = pd.DataFrame({
-                    'est': soup_counts / total_soup if total_soup > 0 else np.zeros(self.n_genes),
-                    'counts': soup_counts
-                }, index=self.gene_names)
-                self.soup_profile = self.soupProfile  # Backwards compatibility
-            else:
-                # No droplets in range, use zeros
-                self.soupProfile = pd.DataFrame({
-                    'est': np.zeros(self.n_genes),
-                    'counts': np.zeros(self.n_genes)
-                }, index=self.gene_names)
-                self.soup_profile = self.soupProfile
+        self.metaData[col_names[0]] = DR.iloc[:, 0].values
+        self.metaData[col_names[1]] = DR.iloc[:, 1].values
+        self.DR = col_names
