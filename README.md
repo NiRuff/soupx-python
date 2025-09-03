@@ -5,7 +5,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/release/python-380/)
 
 A Python implementation of SoupX for removing ambient RNA contamination from droplet-based single-cell RNA sequencing data.
-
+ 
 ## Overview
 
 Droplet-based single-cell RNA sequencing (scRNA-seq) experiments contain ambient RNA contamination from cell-free mRNAs present in the input solution. This "soup" of background contamination can significantly confound biological interpretation, particularly in complex tissues where contamination rates can exceed 20%.
