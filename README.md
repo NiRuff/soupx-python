@@ -5,7 +5,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/release/python-380/)
 
 A Python implementation of SoupX for removing ambient RNA contamination from droplet-based single-cell RNA sequencing data.
-
+ 
 ## Overview
 
 Droplet-based single-cell RNA sequencing (scRNA-seq) experiments contain ambient RNA contamination from cell-free mRNAs present in the input solution. This "soup" of background contamination can significantly confound biological interpretation, particularly in complex tissues where contamination rates can exceed 20%.
@@ -36,7 +36,7 @@ pip install soupx-python
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/soupx-python.git
+git clone https://github.com/NiRuff/soupx-python.git
 cd soupx-python
 pip install -e .
 ```
@@ -243,7 +243,7 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 ### Development Setup
 
 ```bash
-git clone https://github.com/yourusername/soupx-python.git
+git clone https://github.com/NiRuff/soupx-python.git
 cd soupx-python
 pip install -e ".[dev]"
 pytest tests/
@@ -272,8 +272,8 @@ This project is licensed under the GNU General Public License v2.0 - see the [LI
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/soupx-python/issues)
-- **Questions**: [GitHub Discussions](https://github.com/yourusername/soupx-python/discussions)
+- **Issues**: [GitHub Issues](https://github.com/NiRuff/soupx-python/issues)
+- **Questions**: [GitHub Discussions](https://github.com/NiRuff/soupx-python/discussions)
 - **Citation**: Please cite the original SoupX paper (Young & Behjati, 2020)
 
 ## Acknowledgments
