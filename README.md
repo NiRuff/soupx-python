@@ -36,7 +36,7 @@ pip install soupx-python
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/soupx-python.git
+git clone https://github.com/NiRuff/soupx-python.git
 cd soupx-python
 pip install -e .
 ```
@@ -243,7 +243,7 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 ### Development Setup
 
 ```bash
-git clone https://github.com/yourusername/soupx-python.git
+git clone https://github.com/NiRuff/soupx-python.git
 cd soupx-python
 pip install -e ".[dev]"
 pytest tests/
@@ -272,8 +272,8 @@ This project is licensed under the GNU General Public License v2.0 - see the [LI
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/soupx-python/issues)
-- **Questions**: [GitHub Discussions](https://github.com/yourusername/soupx-python/discussions)
+- **Issues**: [GitHub Issues](https://github.com/NiRuff/soupx-python/issues)
+- **Questions**: [GitHub Discussions](https://github.com/NiRuff/soupx-python/discussions)
 - **Citation**: Please cite the original SoupX paper (Young & Behjati, 2020)
 
 ## Acknowledgments
