@@ -125,13 +125,6 @@ def load10X(dataDir, **kwargs):
     return sc_obj
 
 
-# Backwards compatibility - simplified
-def estimate_soup(sc):
-    """Estimate soup profile from empty droplets."""
-    if hasattr(sc, '_calculate_soup_profile'):
-        sc._calculate_soup_profile()
-    return sc.soupProfile
-
 
 def calculate_contamination_fraction(sc, non_expressed_genes, clusters=None):
     """Simple contamination estimation for backwards compatibility."""
