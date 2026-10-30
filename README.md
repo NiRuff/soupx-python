@@ -4,6 +4,7 @@
 [![tests](https://github.com/NiRuff/soupx-python/actions/workflows/tests.yml/badge.svg)](https://github.com/NiRuff/soupx-python/actions/workflows/tests.yml)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://github.com/NiRuff/soupx-python/blob/master/LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23804016.svg)](https://doi.org/10.5281/zenodo.23804016)
 
 A Python port of [SoupX](https://github.com/constantAmateur/SoupX) (Young & Behjati, 2020) for removing
 ambient RNA contamination from droplet-based single-cell RNA-seq data. It follows SoupX 1.6.2 function by
@@ -98,7 +99,7 @@ Please cite the original method:
 > Young, M.D., Behjati, S. SoupX removes ambient RNA contamination from droplet-based single-cell RNA
 > sequencing data. *GigaScience* 9, giaa151 (2020). https://doi.org/10.1093/gigascience/giaa151
 
-and, if you use this port, the software itself (see [CITATION.cff](https://github.com/NiRuff/soupx-python/blob/master/CITATION.cff)).
+and, if you use this port, the software itself (doi:10.5281/zenodo.23804016, see [CITATION.cff](https://github.com/NiRuff/soupx-python/blob/master/CITATION.cff)).
 
 Related: [decontx-python](https://github.com/NiRuff/decontx-python), a validated port of DecontX, which does
 not need empty droplets.
