@@ -36,7 +36,11 @@ def quickMarkers(toc, clusters, N=10, FDR=0.01, expressCut=0.9, verbose=True, ge
     with np.errstate(divide="ignore", invalid="ignore"):
         idf = np.log(nCells / nTot)
         score = tf * idf[:, None]
-    qvals = _p_adjust_bh(stats.hypergeom.sf(nObs - 1, nCells, nTot[:, None], clCnts), axis=0)
+    # hypergeometric p-values, evaluated once per distinct (nObs, nTot, clCnt) triple (identical values)
+    trip = np.stack(np.broadcast_arrays(nObs, nTot[:, None], clCnts), axis=-1).reshape(-1, 3)
+    u, inv = np.unique(trip, axis=0, return_inverse=True)
+    p = stats.hypergeom.sf(u[:, 0] - 1, nCells, u[:, 1], u[:, 2])[inv.ravel()].reshape(nObs.shape)
+    qvals = _p_adjust_bh(p, axis=0)
     rowOrder = np.argsort(genes, kind="stable")  # R: rows of table(factor(rownames)) are sorted names
     N = np.inf if N is None else N
     rows = []

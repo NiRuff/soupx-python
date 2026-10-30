@@ -114,7 +114,7 @@ def _fit_multinomial(fit, lims, logps, tgtN, rng):
     for _ in range(int(10 * lims.sum()) + 10):
         inc, dec = fit < lims, fit > 0
         delInc = np.where(inc, logps - np.log(fit + 1), -np.inf)
-        with np.errstate(divide="ignore"):
+        with np.errstate(divide="ignore", invalid="ignore"):
             delDec = np.where(dec, -logps + np.log(fit), -np.inf)
         mInc, mDec = delInc.max(), delDec.max()
         wIncAll, wDecAll = np.flatnonzero(inc & (delInc == mInc)), np.flatnonzero(dec & (delDec == mDec))
@@ -157,7 +157,14 @@ def expandClusters(clustSoupCnts, cellObsCnts, idx, cellWeights, verbose=0):
         x[nSoup[lims.row] == 0] = 0               # case 1: no soup for gene
         todo = np.flatnonzero((nSoup[lims.row] > 0) & (nSoup[lims.row] < rowTot[lims.row]))
         todo = todo[np.argsort(lims.row[todo], kind="stable")]
-        for e in np.split(todo, np.flatnonzero(np.diff(lims.row[todo])) + 1) if todo.size else []:
+        g = np.unique(lims.row[todo], return_inverse=True)[1]
+        # alloc, vectorized for the common case where proportional shares fit under the limits
+        w = ww[lims.col[todo]]
+        share = nSoup[lims.row[todo]] * (w / np.bincount(g, weights=w)[g])
+        capped = np.bincount(g, weights=share > lims.data[todo]) > 0
+        x[todo] = share
+        hard = todo[capped[g]]
+        for e in np.split(hard, np.flatnonzero(np.diff(lims.row[hard])) + 1) if hard.size else []:
             x[e] = alloc(nSoup[lims.row[e[0]]], lims.data[e], ww[lims.col[e]])
         blocks.append((cells[lims.col], lims.row, x))
     c, r, x = (np.concatenate(v) for v in zip(*blocks))
