@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below, and cite the original SoupX paper."
+title: "soupx-python: a validated Python port of SoupX"
+authors:
+  - family-names: Ruffini
+    given-names: Nicolas
+    orcid: "https://orcid.org/0000-0003-3342-6756"
+version: 0.4.0
+date-released: 2026-10-30
+license: GPL-2.0-only
+repository-code: "https://github.com/NiRuff/soupx-python"
+references:
+  - type: article
+    title: "SoupX removes ambient RNA contamination from droplet-based single-cell RNA sequencing data"
+    authors:
+      - family-names: Young
+        given-names: Matthew D.
+      - family-names: Behjati
+        given-names: Sam
+    journal: GigaScience
+    volume: 9
+    issue: 12
+    start: giaa151
+    year: 2020
+    doi: "10.1093/gigascience/giaa151"

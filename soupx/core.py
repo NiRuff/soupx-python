@@ -104,7 +104,7 @@ class SoupChannel:
         empty_droplets = (droplet_umis > 0) & (droplet_umis < 100)
 
         if np.sum(empty_droplets) > 0:
-            soup_counts = np.array(self.tod[:, empty_droplets].sum(axis=1)).flatten()
+            soup_counts = np.asarray(self.tod @ empty_droplets.astype(np.float64)).ravel()  # fast for any sparse format
             total_soup = np.sum(soup_counts)
 
             # FIX: Check if gene_names is not None, not its truthiness

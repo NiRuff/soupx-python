@@ -1,4 +1,5 @@
 """Parity with R SoupX 1.6.2 on a small synthetic channel (reference outputs computed with R)."""
+import copy
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -42,3 +43,14 @@ def test_adjust_counts_matches_r(ref_channel, method):
     out = soupx.adjustCounts(ref_channel, method=method, verbose=0, seed=0)
     np.testing.assert_allclose(np.asarray(out.sum(1)).ravel(), REF[f"{method}_genes"], atol=1e-8)
     np.testing.assert_allclose(np.asarray(out.sum(0)).ravel(), REF[f"{method}_cells"], atol=1e-8)
+
+
+def test_calculate_contamination_fraction_matches_r(ref_channel):
+    ref_channel = copy.deepcopy(ref_channel)  # do not overwrite rho of the shared fixture
+    genes = list(ref_channel.soupProfile.index)
+    gl = {"A": genes[:10], "B": genes[10:20]}
+    ute = soupx.estimateNonExpressingCells(ref_channel, gl, maximumContamination=0.8)
+    assert list(ute.sum(axis=0)) == list(REF["ccf_ncells"])
+    fit = soupx.calculateContaminationFraction(ref_channel, gl, ute, verbose=False).fit
+    assert fit["rhoEst"] == pytest.approx(REF["ccf"][0], rel=1e-12)
+    np.testing.assert_allclose([fit["rhoLow"], fit["rhoHigh"]], REF["ccf"][1:], rtol=1e-5)  # R interpolates the profile

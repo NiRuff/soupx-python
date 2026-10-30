@@ -37,9 +37,13 @@ def quickMarkers(toc, clusters, N=10, FDR=0.01, expressCut=0.9, verbose=True, ge
         idf = np.log(nCells / nTot)
         score = tf * idf[:, None]
     # hypergeometric p-values, evaluated once per distinct (nObs, nTot, clCnt) triple (identical values)
-    trip = np.stack(np.broadcast_arrays(nObs, nTot[:, None], clCnts), axis=-1).reshape(-1, 3)
+    # (p = 1 where nObs = 0, as R's phyper(-1, ...))
+    p = np.ones_like(nObs)
+    nz = nObs > 0
+    trip = np.stack([nObs[nz], np.broadcast_to(nTot[:, None], nObs.shape)[nz],
+                     np.broadcast_to(clCnts, nObs.shape)[nz]], axis=1)
     u, inv = np.unique(trip, axis=0, return_inverse=True)
-    p = stats.hypergeom.sf(u[:, 0] - 1, nCells, u[:, 1], u[:, 2])[inv.ravel()].reshape(nObs.shape)
+    p[nz] = stats.hypergeom.sf(u[:, 0] - 1, nCells, u[:, 1], u[:, 2])[inv.ravel()]
     qvals = _p_adjust_bh(p, axis=0)
     rowOrder = np.argsort(genes, kind="stable")  # R: rows of table(factor(rownames)) are sorted names
     N = np.inf if N is None else N
@@ -83,7 +87,7 @@ def estimateNonExpressingCells(sc, nonExpressedGeneList, clusters=None, maximumC
         if verbose:
             print("No clusters found or supplied, using every cell as its own cluster.")
         clusters = np.arange(sc.toc.shape[1])
-    flat = all(isinstance(g, str) for g in nonExpressedGeneList)
+    flat = not isinstance(nonExpressedGeneList, dict) and all(isinstance(g, str) for g in nonExpressedGeneList)
     sets = {"set": list(nonExpressedGeneList)} if flat else dict(nonExpressedGeneList)
     out = _non_expressing(sc, list(sets.values()), clusters, maximumContamination, FDR)
     if out.sum() == 0:
@@ -150,4 +154,38 @@ def autoEstCont(sc, topMarkers=None, tfidfMin=1.0, soupQuantile=0.90, maxMarkers
     sc.fit = {"dd": dd, "priorRho": priorRho, "priorRhoStdDev": priorRhoStdDev, "posterior": post,
               "rhoEst": rhoEst, "rhoFWHM": (half.min(), half.max()), "rhoProbes": rhoProbes, "markersUsed": mrks}
     sc.set_contamination_fraction(rhoEst, forceAccept=forceAccept)
+    return sc
+
+
+def calculateContaminationFraction(sc, nonExpressedGeneList, useToEst, verbose=True, forceAccept=False):
+    """Global rho from gene sets known not to be expressed in some cells (R calculateContaminationFraction).
+
+    useToEst: output of estimateNonExpressingCells (cells x sets, or cells for a single flat gene list).
+    R fits glm(counts ~ 1, poisson, offset = log(expected soup counts)); its MLE is sum(counts) /
+    sum(expected). rhoLow/rhoHigh are the 95% profile-likelihood interval (R: confint).
+    """
+    flat = not isinstance(nonExpressedGeneList, dict) and all(isinstance(g, str) for g in nonExpressedGeneList)
+    sets = [list(nonExpressedGeneList)] if flat else list(dict(nonExpressedGeneList).values())
+    use = np.asarray(useToEst, dtype=bool).reshape(len(sc.metaData), -1)
+    if not use.any():
+        raise ValueError("No cells specified as acceptable for estimation. useToEst must not be all False")
+    toc = sparse.csr_matrix(sc.toc)
+    nUMIs = sc.metaData["nUMIs"].to_numpy(np.float64)
+    obs = exp = 0.0
+    for i, g in enumerate(sets):
+        gi = sc.soupProfile.index.get_indexer(g)
+        w = use[:, i]
+        obs += toc[gi][:, w].sum()
+        exp += (nUMIs[w] * sc.soupProfile["est"].to_numpy()[gi].sum()).sum()
+    rho = obs / exp
+    half = stats.chi2.ppf(0.95, 1) / 2
+    llr = lambda r: (obs * np.log(obs / (r * exp)) if obs > 0 else 0.0) - (obs - r * exp) - half
+    from scipy.optimize import brentq
+    lo = brentq(llr, 1e-300, rho) if obs > 0 else 0.0
+    hi = brentq(llr, max(rho, 1e-300), 10 * rho + 10 / exp)
+    sc.set_contamination_fraction(rho, forceAccept=forceAccept)
+    sc.metaData["rhoLow"], sc.metaData["rhoHigh"] = lo, hi
+    sc.fit = {"rhoEst": rho, "rhoLow": lo, "rhoHigh": hi, "obsCnt": obs, "expCnt": exp}
+    if verbose:
+        print(f"Estimated global contamination fraction of {100 * rho:.2f}%")
     return sc

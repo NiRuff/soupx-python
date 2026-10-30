@@ -14,18 +14,20 @@ from scipy import sparse
 from .core import SoupChannel
 from .estimation import (
     autoEstCont,
+    calculateContaminationFraction,
     estimateNonExpressingCells,
     quickMarkers
 )
 from .correction import adjustCounts
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # R-compatible naming (primary interface)
 __all__ = [
     "SoupChannel",
     "adjustCounts",
     "autoEstCont",
+    "calculateContaminationFraction",
     "estimateNonExpressingCells",
     "quickMarkers",
 ]
@@ -125,10 +127,3 @@ def load10X(dataDir, **kwargs):
             sc_obj.soupProfile.index = sc_obj.gene_names
 
     return sc_obj
-
-
-
-def calculate_contamination_fraction(sc, non_expressed_genes, clusters=None):
-    """Simple contamination estimation for backwards compatibility."""
-    # Just call autoEstCont with defaults
-    return autoEstCont(sc, verbose=False)
