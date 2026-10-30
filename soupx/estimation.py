@@ -125,13 +125,7 @@ def autoEstCont(sc, **kwargs):
     # R: m = rownames(sc$metaData)[match(rownames(ssc$metaData),sc$metaData$clusters)]
     # R: ute = t(ute[m,,drop=FALSE])
     # Transform from cell-level to cluster-level matrix
-    ute = np.zeros((len(final_genes), len(unique_clusters)), dtype=bool)
-
-    for i, cluster_id in enumerate(unique_clusters):
-        cluster_mask = clusters == cluster_id
-        # For each gene, check if ANY cell in this cluster can be used for estimation
-        for j in range(len(final_genes)):
-            ute[j, i] = np.any(ute_cell_level[cluster_mask, j])
+    ute = np.column_stack([ute_cell_level[clusters == c].any(axis=0) for c in unique_clusters])
 
     if verbose:
         n_usable_combinations = np.sum(ute)
@@ -196,20 +190,12 @@ def autoEstCont(sc, **kwargs):
     #        mean(dgamma(e,k+tmp$obsCnt,scale=theta/(1+theta*tmp$expCnt)))
     #     })
     valid_estimates = dd[dd['useEst']]
-
-    posterior_density = []
-    for rho in rhoProbes:
-        densities = []
-        for _, row in valid_estimates.iterrows():
-            # R: dgamma(e,k+tmp$obsCnt,scale=theta/(1+theta*tmp$expCnt))
-            shape = k + row['obsCnt']
-            scale = theta / (1 + theta * row['expCnt'])
-            density = stats.gamma.pdf(rho, a=shape, scale=scale)
-            densities.append(density)
-
-        posterior_density.append(np.mean(densities) if densities else 0)
-
-    posterior_density = np.array(posterior_density)
+    if len(valid_estimates) > 0:
+        shape = k + valid_estimates['obsCnt'].values
+        scale = theta / (1 + theta * valid_estimates['expCnt'].values)
+        posterior_density = stats.gamma.pdf(rhoProbes[:, None], a=shape, scale=scale).mean(axis=1)
+    else:
+        posterior_density = np.zeros_like(rhoProbes)
 
     # R: w = which(rhoProbes>=contaminationRange[1] & rhoProbes<=contaminationRange[2])
     # R: rhoEst = (rhoProbes[w])[which.max(tmp[w])]
@@ -450,14 +436,9 @@ def estimateNonExpressingCells(
     cnts_dense = cnts.toarray() if hasattr(cnts, 'toarray') else cnts
 
     # Calculate p-values for each gene/cell combination
-    clustExp = np.zeros_like(cnts_dense, dtype=float)
-    for i in range(cnts_dense.shape[0]):
-        for j in range(cnts_dense.shape[1]):
-            if exp[i, j] <= 0:
-                clustExp[i, j] = 0.0 if cnts_dense[i, j] > 0 else 1.0
-            else:
-                # R: ppois(cnts-1, exp, lower.tail=FALSE)
-                clustExp[i, j] = 1 - stats.poisson.cdf(cnts_dense[i, j] - 1, exp[i, j])
+    with np.errstate(invalid='ignore', divide='ignore'):
+        clustExp = np.where(exp > 0, 1 - stats.poisson.cdf(cnts_dense - 1, exp),
+                            np.where(cnts_dense > 0, 0.0, 1.0))
 
     # R: clustExp = t(apply(clustExp,1,p.adjust,method='BH'))
     # Apply FDR correction across cells for each gene
@@ -482,14 +463,7 @@ def estimateNonExpressingCells(
 
     # R: clustExp = clustExp[match(clusters,rownames(clustExp)),,drop=FALSE]
     # Expand back to cell level - if cluster passes for a gene, all cells in cluster pass
-    use_cells = np.ones(sc.n_cells, dtype=bool)
-
-    for i, cluster in enumerate(clusters):
-        cluster_idx = np.where(unique_clusters == cluster)[0]
-        if len(cluster_idx) > 0:
-            cluster_idx = cluster_idx[0]
-            # If ANY gene fails the test for this cluster, exclude all cells in cluster
-            if not np.all(cluster_passes[:, cluster_idx]):
-                use_cells[i] = False
+    # A cell is usable only if its cluster passes for all genes
+    use_cells = cluster_passes.all(axis=0)[np.searchsorted(unique_clusters, clusters)]
 
     return use_cells
