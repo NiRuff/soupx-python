@@ -59,22 +59,22 @@ or set ρ directly with `s.set_contamination_fraction(0.1)`.
 
 Compared against R SoupX 1.6.2 (R 4.6.1) on the 10x Genomics dataset *10k 1:1 Mixture of Human HEK293T and
 Mouse NIH3T3 cells, 3' v3.1, Chromium Controller* (9,588 single-species cells after removing human/mouse
-doublets, 68,886 genes, 13 Leiden clusters), with identical inputs and default parameters. Scripts and
+doublets, 68,886 genes, 14 Leiden clusters), with identical inputs and default parameters. Scripts and
 instructions: [`validation/`](validation/).
 
 | | R SoupX | soupx-python |
 |---|---|---|
 | soup profile | | identical |
-| marker table (`quickMarkers`, 117,310 gene/cluster pairs) | | identical, incl. order |
-| ρ (`autoEstCont`, 100 markers, 710 estimates) | 0.017 | 0.017, identical posterior |
-| corrected counts, max. abs. difference | | subtraction 2e-12, soupOnly 0, multinomial 3e-12 |
+| marker table (`quickMarkers`, 124,792 gene/cluster pairs) | | identical, incl. order |
+| ρ (`autoEstCont`, 100 markers, 739 estimates) | 0.017 | 0.017, identical posterior |
+| corrected counts, max. abs. difference | | subtraction 1e-12, soupOnly 0, multinomial 7e-13 |
 
-Runtime on the same Windows machine (seconds; R / Python): `autoEstCont` 13 / 19, `subtraction` 62 / 13,
-`soupOnly` 19 / 7, `multinomial` 556 / 77.
+Runtime on the same Windows machine (seconds; R / Python): `autoEstCont` 14 / 20, `subtraction` 62 / 13,
+`soupOnly` 19 / 6, `multinomial` 576 / 78.
 
 Cross-species counts (mouse genes in human cells and vice versa) are known ambient RNA. Scaled by the share
 of the other species in the soup profile they give ρ ≈ 0.022, so `autoEstCont` underestimates slightly on
-this dataset (0.017). `subtraction` and `multinomial` remove 71% of the cross-species counts, `soupOnly` 51%;
+this dataset (0.017). `subtraction` and `multinomial` remove 71% of the cross-species counts, `soupOnly` 52%;
 of the counts removed by `soupOnly`, 99% are cross-species, versus 45% for the other two (49% would be
 expected if everything removed were ambient). These are properties of SoupX itself, as R gives the same
 numbers.

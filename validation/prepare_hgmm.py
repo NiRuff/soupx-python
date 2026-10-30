@@ -11,7 +11,7 @@ from parity import write
 
 filtered, raw, out = sys.argv[1:4]
 os.makedirs(out, exist_ok=True)
-a = sc.read_10x_h5(filtered)
+a = sc.read_10x_h5(filtered); a.var_names_make_unique()  # symbols only; gene_ids are used
 genes = a.var["gene_ids"].to_numpy(str)                 # unique, unlike gene symbols
 human = pd.Series(genes).str.startswith("GRCh38").to_numpy()
 frac = np.asarray(a.X[:, human].sum(1)).ravel() / np.asarray(a.X.sum(1)).ravel()
@@ -26,7 +26,7 @@ sc.tl.leiden(a, flavor="igraph", n_iterations=2, random_state=0)
 clusters = ["c%02d" % int(c) for c in a.obs["leiden"]]
 print(pd.crosstab(a.obs["species"], pd.Series(clusters, index=a.obs_names, name="cluster")))
 
-r = sc.read_10x_h5(raw)
+r = sc.read_10x_h5(raw); r.var_names_make_unique()
 assert (r.var["gene_ids"].to_numpy(str) == genes).all(), "raw and filtered genes differ"
 tod = r.X.T.tocsc()
 n = np.asarray(tod.sum(0)).ravel()
