@@ -1,469 +1,149 @@
-"""
-Contamination estimation functions matching R SoupX exactly.
-"""
+"""Contamination estimation, ported from SoupX 1.6.2 (R/autoEstCont.R, R/quickMarkers.R,
+R/estimateNonExpressingCells.R)."""
+import warnings
 import numpy as np
 import pandas as pd
 from scipy import sparse, stats
-from typing import Optional, Tuple, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .core import SoupChannel
 
 
-def _p_adjust_bh(p):
+def _p_adjust_bh(p, axis=-1):
     """Benjamini-Hochberg adjustment, equivalent to R's p.adjust(method='BH')."""
-    return stats.false_discovery_control(np.clip(p, 0, 1), method="bh")
+    return stats.false_discovery_control(np.clip(p, 0, 1), method="bh", axis=axis)
 
 
-def autoEstCont(sc, **kwargs):
+def _onehot(clusters):
+    labels, idx = np.unique(np.asarray(clusters).astype(str), return_inverse=True)
+    G = sparse.csr_matrix((np.ones(idx.size), (np.arange(idx.size), idx)), shape=(idx.size, labels.size))
+    return labels, idx, G
+
+
+def quickMarkers(toc, clusters, N=10, FDR=0.01, expressCut=0.9, verbose=True, gene_names=None):
+    """tf-idf marker genes per cluster (R quickMarkers). toc is genes x cells; N=None means all.
+
+    As in R, genes are ranked within a cluster by tf-idf with ties broken by gene name, and
+    q-values are BH-adjusted over all genes. If at least N genes pass FDR, the top N by tf-idf
+    are returned without the FDR filter (R behaviour).
     """
-    Exact R implementation matching cluster-level aggregation and gene×cluster matrix approach.
+    toc = sparse.csr_matrix(toc)
+    genes = np.asarray(gene_names if gene_names is not None else [f"gene_{i}" for i in range(toc.shape[0])], dtype=str)
+    labels, idx, G = _onehot(clusters)
+    nCells = toc.shape[1]
+    nObs = np.asarray(((toc > expressCut).astype(np.float64) @ G).todense())
+    clCnts = np.bincount(idx).astype(np.float64)
+    nTot = nObs.sum(1)
+    tf = nObs / clCnts
+    ntf = (nTot[:, None] - nObs) / (nCells - clCnts)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        idf = np.log(nCells / nTot)
+        score = tf * idf[:, None]
+    qvals = _p_adjust_bh(stats.hypergeom.sf(nObs - 1, nCells, nTot[:, None], clCnts), axis=0)
+    rowOrder = np.argsort(genes, kind="stable")  # R: rows of table(factor(rownames)) are sorted names
+    N = np.inf if N is None else N
+    rows = []
+    for e, lab in enumerate(labels):
+        o = rowOrder[np.argsort(-score[rowOrder, e], kind="stable")]  # NaN last, like R
+        sel = o[:int(N)] if (qvals[:, e] < FDR).sum() >= N else o[qvals[o, e] < FDR]
+        other = np.delete(np.arange(labels.size), e)
+        snd = other[np.argmax(tf[np.ix_(sel, other)], axis=1)] if other.size else np.full(sel.size, e)
+        rows.append(pd.DataFrame({
+            "gene": genes[sel], "cluster": lab, "geneFrequency": tf[sel, e],
+            "geneFrequencyOutsideCluster": ntf[sel, e], "geneFrequencySecondBest": tf[sel, snd],
+            "geneFrequencyGlobal": nTot[sel] / nCells, "secondBestClusterName": labels[snd],
+            "tfidf": score[sel, e], "idf": idf[sel], "qval": qvals[sel, e]}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def _non_expressing(sc, sets, clusters, maximumContamination, FDR):
+    """cells x sets boolean matrix: can the cell's cluster be used to estimate rho from this set."""
+    gidx = pd.Index(sc.soupProfile.index)
+    toc = sparse.csr_matrix(sc.toc)
+    S = sparse.csr_matrix([np.isin(np.arange(toc.shape[0]), gidx.get_indexer(g)) for g in sets], dtype=np.float64)
+    cnts = np.asarray((S @ toc).todense())
+    exp = np.outer(S @ sc.soupProfile["est"].to_numpy(), sc.metaData["nUMIs"].to_numpy() * maximumContamination)
+    p = _p_adjust_bh(stats.poisson.sf(cnts - 1, exp), axis=1)
+    labels, idx, _ = _onehot(clusters)
+    passes = np.stack([p[:, idx == k].min(axis=1) >= FDR for k in range(labels.size)], axis=1)
+    return passes[:, idx].T
+
+
+def estimateNonExpressingCells(sc, nonExpressedGeneList, clusters=None, maximumContamination=1.0,
+                               FDR=0.05, verbose=True):
+    """Cells whose cluster shows no evidence of expressing each gene set (R estimateNonExpressingCells).
+
+    nonExpressedGeneList: dict {name: [genes]} -> DataFrame (cells x sets); a flat list of genes is
+    treated as one set -> boolean array (cells). Without clusters every cell is its own cluster.
     """
-    from scipy import stats
-    import numpy as np
-    import pandas as pd
+    if clusters is None:
+        clusters = sc.metaData["clusters"].to_numpy() if "clusters" in sc.metaData.columns else False
+    if clusters is False:
+        if verbose:
+            print("No clusters found or supplied, using every cell as its own cluster.")
+        clusters = np.arange(sc.toc.shape[1])
+    flat = all(isinstance(g, str) for g in nonExpressedGeneList)
+    sets = {"set": list(nonExpressedGeneList)} if flat else dict(nonExpressedGeneList)
+    out = _non_expressing(sc, list(sets.values()), clusters, maximumContamination, FDR)
+    if out.sum() == 0:
+        warnings.warn("No non-expressing cells identified. Consider increasing FDR or maximumContamination.")
+    return out[:, 0] if flat else pd.DataFrame(out, index=sc.metaData.index, columns=list(sets))
 
-    # Extract parameters with R defaults
-    tfidfMin = kwargs.get('tfidfMin', 1.0)
-    soupQuantile = kwargs.get('soupQuantile', 0.90)
-    maxMarkers = kwargs.get('maxMarkers', 100)
-    contaminationRange = kwargs.get('contaminationRange', (0.01, 0.8))
-    rhoMaxFDR = kwargs.get('rhoMaxFDR', 0.2)
-    priorRho = kwargs.get('priorRho', 0.05)
-    priorRhoStdDev = kwargs.get('priorRhoStdDev', 0.10)
-    verbose = kwargs.get('verbose', True)
-    forceAccept = kwargs.get('forceAccept', False)
 
-    if 'clusters' not in sc.metaData.columns:
+def autoEstCont(sc, topMarkers=None, tfidfMin=1.0, soupQuantile=0.90, maxMarkers=100,
+                contaminationRange=(0.01, 0.8), rhoMaxFDR=0.2, priorRho=0.05, priorRhoStdDev=0.10,
+                forceAccept=False, verbose=True, **kwargs):
+    """Estimate the global contamination fraction from cluster-specific markers (R autoEstCont)."""
+    if "clusters" not in sc.metaData.columns:
         raise ValueError("Clustering information must be supplied, run setClusters first.")
-
-    clusters = sc.metaData['clusters'].values
-    unique_clusters = np.unique(clusters)
-
-    # STEP 1: Collapse by cluster - EXACT R MATCH
-    # R: s = split(rownames(sc$metaData),sc$metaData$clusters)
-    # R: tmp = do.call(cbind,lapply(s,function(e) rowSums(sc$toc[,e,drop=FALSE])))
-    cluster_toc = []
-    cluster_metadata = []
-
-    for cluster_id in unique_clusters:
-        cluster_mask = clusters == cluster_id
-        cell_indices = np.where(cluster_mask)[0]
-
-        # R: rowSums(sc$toc[,e,drop=FALSE])
-        cluster_counts = np.array(sc.toc[:, cell_indices].sum(axis=1)).flatten()
-        cluster_toc.append(cluster_counts)
-
-        # R: data.frame(nUMIs = colSums(tmp))
-        cluster_nUMIs = cluster_counts.sum()
-        cluster_metadata.append({'nUMIs': cluster_nUMIs})
-
-    # Create cluster-level data structures
-    cluster_toc_matrix = np.column_stack(cluster_toc)  # genes × clusters
-    cluster_metaData = pd.DataFrame(cluster_metadata, index=unique_clusters)
-
-    if verbose:
-        print(f"Collapsed to cluster level: {cluster_toc_matrix.shape} matrix")
-
-    # STEP 2: Get markers - R does this on original cell-level data
-    # R: mrks = quickMarkers(sc$toc,sc$metaData$clusters,N=Inf)
-    mrks = quickMarkers(
-        sc.toc, clusters, N=None, verbose=False,
-        gene_names=sc.gene_names if hasattr(sc, 'gene_names') else None,
-        expressCut=0.9
-    )
-
-    # R marker processing
-    mrks = mrks.sort_values(['gene', 'tfidf'], ascending=[True, False])
-    mrks = mrks[~mrks.duplicated(subset='gene', keep='first')]
-    mrks = mrks.sort_values('tfidf', ascending=False)
-    mrks = mrks[mrks['tfidf'] > tfidfMin]
-
-    # STEP 3: Filter by soup quantile
-    # R: soupProf = ssc$soupProfile[order(ssc$soupProfile$est,decreasing=TRUE),]
-    # R: soupMin = quantile(soupProf$est,soupQuantile)
-    soupProf = sc.soupProfile.sort_values('est', ascending=False)
-    soupMin = np.quantile(soupProf['est'].values, soupQuantile)
-
-    # R: tgts = rownames(soupProf)[soupProf$est>soupMin]
-    tgts = soupProf.index[soupProf['est'] > soupMin].tolist()
-
-    # R: filtPass = mrks[mrks$gene %in% tgts,]
-    # R: tgts = head(filtPass$gene,n=maxMarkers)
-    filtPass = mrks[mrks['gene'].isin(tgts)]
-    final_genes = filtPass.head(maxMarkers)['gene'].tolist()
-
+    clusters = sc.metaData["clusters"].to_numpy().astype(str)
+    labels, idx, G = _onehot(clusters)
+    ctoc = np.asarray((sparse.csr_matrix(sc.toc) @ G).todense())   # genes x clusters
+    cn = ctoc.sum(0)
+    soupProf = sc.soupProfile.sort_values("est", ascending=False, kind="stable")
+    soupMin = np.quantile(soupProf["est"].to_numpy(), soupQuantile)
+    if topMarkers is None:
+        mrks = quickMarkers(sc.toc, clusters, N=None, gene_names=list(sc.soupProfile.index))
+        mrks = mrks.assign(_neg=-mrks["tfidf"]).sort_values(["gene", "_neg"], kind="stable")
+        mrks = mrks[~mrks["gene"].duplicated()]
+        mrks = mrks.sort_values("_neg", kind="stable").drop(columns="_neg")
+        mrks = mrks[mrks["tfidf"] > tfidfMin]
+    else:
+        mrks = topMarkers
+    filtPass = mrks[mrks["gene"].isin(soupProf.index[soupProf["est"] > soupMin])]
+    tgts = list(filtPass["gene"].head(maxMarkers))
     if verbose:
         print(f"{len(mrks)} genes passed tf-idf cut-off and {len(filtPass)} soup quantile filter. "
-              f"Taking the top {len(final_genes)}.")
-
-    if len(final_genes) == 0:
-        raise ValueError("No plausible marker genes found. Reduce tfidfMin or soupQuantile")
-
-    if len(final_genes) < 10:
-        print("Warning: Fewer than 10 marker genes found. Is this channel low complexity?")
-
-    # STEP 4: Get estimates in clusters - CORRECTED R METHOD
-    # R: tmp = as.list(tgts); names(tmp) = tgts
-    # R creates a list where each gene is its own "gene set"
-    gene_sets_dict = {gene: [gene] for gene in final_genes}
-
-    # R: ute = estimateNonExpressingCells(sc,tmp,maximumContamination=max(contaminationRange),FDR=rhoMaxFDR)
-    # Call estimateNonExpressingCells ONCE with all genes as individual gene sets
-    ute_cell_level = np.zeros((sc.n_cells, len(final_genes)), dtype=bool)
-
-    # This is the critical fix - call estimateNonExpressingCells for each gene as R does
-    for i, gene in enumerate(final_genes):
-        non_expressing = estimateNonExpressingCells(
-            sc, [gene], clusters,  # Single gene as list (like R's individual gene sets)
-            maximumContamination=max(contaminationRange),
-            FDR=rhoMaxFDR,
-            verbose=False
-        )
-        ute_cell_level[:, i] = non_expressing
-
-    # R: m = rownames(sc$metaData)[match(rownames(ssc$metaData),sc$metaData$clusters)]
-    # R: ute = t(ute[m,,drop=FALSE])
-    # Transform from cell-level to cluster-level matrix
-    ute = np.column_stack([ute_cell_level[clusters == c].any(axis=0) for c in unique_clusters])
-
+              f"Taking the top {len(tgts)}.")
+    if not tgts:
+        raise ValueError("No plausible marker genes found. Is the channel low complexity? "
+                         "If not, reduce tfidfMin or soupQuantile")
+    if len(tgts) < 10:
+        warnings.warn("Fewer than 10 marker genes found. Consider reducing tfidfMin or soupQuantile")
+    ute = _non_expressing(sc, [[g] for g in tgts], clusters, max(contaminationRange), rhoMaxFDR)
+    ute = ute[[np.flatnonzero(idx == k)[0] for k in range(labels.size)]].T   # genes x clusters
+    gi = sc.soupProfile.index.get_indexer(tgts)
+    expCnts = np.outer(sc.soupProfile["est"].to_numpy()[gi], cn)
+    obsCnts = ctoc[gi]
+    dd = pd.DataFrame({"gene": np.repeat(tgts, labels.size), "cluster": np.tile(labels, len(tgts)),
+                       "passNonExp": ute.ravel(), "rhoEst": (obsCnts / expCnts).ravel(),
+                       "obsCnt": obsCnts.ravel(), "expCnt": expCnts.ravel()})
+    dd["useEst"] = dd["passNonExp"]
+    if dd["useEst"].sum() < 10:
+        warnings.warn("Fewer than 10 independent estimates, rho estimation is likely to be unstable.")
     if verbose:
-        n_usable_combinations = np.sum(ute)
-        print(f"Found {n_usable_combinations} usable gene×cluster combinations for estimation")
-
-    # STEP 5: Create gene×cluster matrices - EXACT R
-    # R: expCnts = outer(ssc$soupProfile$est,ssc$metaData$nUMIs)
-    soup_est = sc.soupProfile.loc[final_genes, 'est'].values
-    cluster_nUMIs = cluster_metaData['nUMIs'].values
-    expCnts = np.outer(soup_est, cluster_nUMIs)  # genes × clusters
-
-    # R: obsCnts = ssc$toc[tgts,,drop=FALSE]
-    gene_indices = [sc.soupProfile.index.get_loc(gene) for gene in final_genes]
-    obsCnts = cluster_toc_matrix[gene_indices, :]  # genes × clusters
-
-    # STEP 6: Create data frame with all gene×cluster combinations
-    # R: dd = data.frame(gene = rep(rownames(ute),ncol(ute)), ...)
-    n_genes = len(final_genes)
-    n_clusters = len(unique_clusters)
-
-    # Create vectors for all gene×cluster combinations
-    genes_vec = np.repeat(final_genes, n_clusters)
-    clusters_vec = np.tile(unique_clusters, n_genes)
-    passNonExp_vec = ute.flatten()
-    rhoEst_vec = (obsCnts / expCnts).flatten()
-    obsCnt_vec = obsCnts.flatten()
-    expCnt_vec = expCnts.flatten()
-
-    # Create the data frame
-    dd = pd.DataFrame({
-        'gene': genes_vec,
-        'cluster': clusters_vec,
-        'passNonExp': passNonExp_vec,
-        'rhoEst': rhoEst_vec,
-        'obsCnt': obsCnt_vec,
-        'expCnt': expCnt_vec
-    })
-
-    # R: dd$useEst = dd$passNonExp
-    dd['useEst'] = dd['passNonExp']
-
-    n_estimates = dd['useEst'].sum()
-    if n_estimates < 10:
-        print("Warning: Fewer than 10 independent estimates, rho estimation may be unstable.")
-
-    if verbose:
-        print(f"Using {n_estimates} independent estimates of rho.")
-
-    # STEP 7: Aggregate posterior probabilities - EXACT R
-    # R: v2 = (priorRhoStdDev/priorRho)**2
-    # R: k = 1 +v2**-2/2*(1+sqrt(1+4*v2))
-    # R: theta = priorRho/(k-1)
+        print(f"Using {int(dd['useEst'].sum())} independent estimates of rho.")
     v2 = (priorRhoStdDev / priorRho) ** 2
     k = 1 + v2 ** -2 / 2 * (1 + np.sqrt(1 + 4 * v2))
     theta = priorRho / (k - 1)
-
-    # R: rhoProbes=seq(0,1,.001)
-    rhoProbes = np.arange(0, 1.001, 0.001)
-
-    # R: tmp = sapply(rhoProbes,function(e) {
-    #        tmp = dd[dd$useEst,]
-    #        mean(dgamma(e,k+tmp$obsCnt,scale=theta/(1+theta*tmp$expCnt)))
-    #     })
-    valid_estimates = dd[dd['useEst']]
-    if len(valid_estimates) > 0:
-        shape = k + valid_estimates['obsCnt'].values
-        scale = theta / (1 + theta * valid_estimates['expCnt'].values)
-        posterior_density = stats.gamma.pdf(rhoProbes[:, None], a=shape, scale=scale).mean(axis=1)
-    else:
-        posterior_density = np.zeros_like(rhoProbes)
-
-    # R: w = which(rhoProbes>=contaminationRange[1] & rhoProbes<=contaminationRange[2])
-    # R: rhoEst = (rhoProbes[w])[which.max(tmp[w])]
-    valid_range = (rhoProbes >= contaminationRange[0]) & (rhoProbes <= contaminationRange[1])
-    valid_idx = np.where(valid_range)[0]
-
-    if len(valid_idx) == 0:
-        raise ValueError("No valid rho values in contamination range")
-
-    peak_idx = valid_idx[np.argmax(posterior_density[valid_idx])]
-    rhoEst = rhoProbes[peak_idx]
-
+    rhoProbes = np.arange(1001) * 0.001                      # R: seq(0, 1, .001)
+    use = dd[dd["useEst"]]
+    post = (stats.gamma.pdf(rhoProbes[:, None], a=k + use["obsCnt"].to_numpy(),
+                            scale=theta / (1 + theta * use["expCnt"].to_numpy())).mean(axis=1)
+            if len(use) else np.zeros_like(rhoProbes))
+    w = np.flatnonzero((rhoProbes >= contaminationRange[0]) & (rhoProbes <= contaminationRange[1]))
+    rhoEst = rhoProbes[w][np.argmax(post[w])]
+    half = rhoProbes[w][post[w] >= post[w].max() / 2]
     if verbose:
         print(f"Estimated global rho of {rhoEst:.2f}")
-
-    # Set contamination fraction
+    sc.fit = {"dd": dd, "priorRho": priorRho, "priorRhoStdDev": priorRhoStdDev, "posterior": post,
+              "rhoEst": rhoEst, "rhoFWHM": (half.min(), half.max()), "rhoProbes": rhoProbes, "markersUsed": mrks}
     sc.set_contamination_fraction(rhoEst, forceAccept=forceAccept)
-
-    # Store fit information
-    sc.fit = {
-        'dd': dd,
-        'estimates': dd[dd['useEst']].copy(),
-        'priorRho': priorRho,
-        'priorRhoStdDev': priorRhoStdDev,
-        'posterior': posterior_density,
-        'rhoEst': rhoEst,
-        'rhoProbes': rhoProbes,
-        'markersUsed': mrks,
-        'n_estimates': n_estimates
-    }
-
     return sc
-
-
-def quickMarkers(
-        toc: sparse.csr_matrix,
-        clusters: np.ndarray,
-        N: Optional[int] = 10,
-        FDR: float = 0.01,
-        expressCut: float = 0.9,
-        verbose: bool = True,
-        gene_names: Optional[list] = None
-) -> pd.DataFrame:
-    """
-    Exact R implementation of quickMarkers using sparse matrix indices.
-    """
-    from scipy import sparse
-    import numpy as np
-    import pandas as pd
-
-    # Convert to coordinate format like R's TsparseMatrix
-    toc_coo = toc.tocoo()
-
-    if gene_names is None:
-        gene_names = [f"gene_{i}" for i in range(toc.shape[0])]
-
-    # R: w = which(toc@x>expressCut)
-    w = toc_coo.data > expressCut
-
-    # R: clCnts = table(clusters)
-    unique_clusters, cluster_counts = np.unique(clusters, return_counts=True)
-    clCnts = dict(zip(unique_clusters, cluster_counts))
-
-    # R: nObs = split(factor(rownames(toc))[toc@i[w]+1],clusters[toc@j[w]+1])
-    # R: nObs = sapply(nObs,table)
-
-    # Get gene indices and cluster indices for values > expressCut
-    gene_indices = toc_coo.row[w]  # R: toc@i[w]+1 (but Python is 0-indexed)
-    cell_indices = toc_coo.col[w]  # R: toc@j[w]+1
-    cell_clusters = clusters[cell_indices]  # clusters for those cells
-
-    # Create the split structure - for each cluster, count gene occurrences
-    nObs = {}
-    for cluster in unique_clusters:
-        cluster_mask = cell_clusters == cluster
-        if np.any(cluster_mask):
-            genes_in_cluster = gene_indices[cluster_mask]
-            # Count occurrences of each gene in this cluster
-            unique_genes, gene_counts = np.unique(genes_in_cluster, return_counts=True)
-            nObs[cluster] = dict(zip(unique_genes, gene_counts))
-        else:
-            nObs[cluster] = {}
-
-    # Convert to matrix form - genes x clusters
-    n_genes = toc.shape[0]
-    nObs_matrix = np.zeros((n_genes, len(unique_clusters)))
-
-    for j, cluster in enumerate(unique_clusters):
-        for gene_idx, count in nObs[cluster].items():
-            nObs_matrix[gene_idx, j] = count
-
-    # R: nTot = rowSums(nObs)
-    nTot = nObs_matrix.sum(axis=1)
-
-    # R: tf = t(t(nObs)/as.integer(clCnts[colnames(nObs)]))
-    cluster_sizes = np.array([clCnts[cluster] for cluster in unique_clusters])
-    tf = nObs_matrix / cluster_sizes[np.newaxis, :]  # Broadcasting
-
-    # R: idf = log(ncol(toc)/nTot)
-    n_cells_total = toc.shape[1]
-    idf = np.log(n_cells_total / np.maximum(nTot, 1))  # Avoid division by zero
-
-    # R: score = tf*idf
-    score = tf * idf[:, np.newaxis]  # Broadcasting idf across clusters
-
-    # Calculate hypergeometric p-values for each gene/cluster combination
-    markers = []
-
-    for j, cluster in enumerate(unique_clusters):
-        n_cells_cluster = clCnts[cluster]
-
-        for gene_idx in range(n_genes):
-            if nObs_matrix[gene_idx, j] == 0:
-                continue  # Skip genes not expressed in this cluster
-
-            # Hypergeometric test parameters
-            M = n_cells_total  # Total population
-            n = int(nTot[gene_idx])  # Success states in population
-            N_sample = n_cells_cluster  # Sample size
-            k = int(nObs_matrix[gene_idx, j])  # Observed successes
-
-            if n == 0 or k == 0:
-                p_val = 1.0
-            else:
-                # R: phyper(k-1, n, M-n, N_sample, lower.tail=FALSE)
-                p_val = stats.hypergeom.sf(k - 1, M, n, N_sample)
-
-            markers.append({
-                'gene': gene_names[gene_idx],
-                'cluster': str(cluster),
-                'tfidf': score[gene_idx, j],
-                'geneFrequency': tf[gene_idx, j],
-                'geneFrequencyGlobal': nTot[gene_idx] / n_cells_total,
-                'p_value': p_val,
-                'gene_idx': gene_idx,
-                'cluster_idx': j
-            })
-
-    if len(markers) == 0:
-        return pd.DataFrame()
-
-    # Convert to DataFrame and apply FDR correction per cluster
-    df = pd.DataFrame(markers)
-
-    # Apply FDR correction within each cluster
-    for cluster in unique_clusters:
-        cluster_mask = df['cluster'] == str(cluster)
-        if np.any(cluster_mask):
-            p_vals = df.loc[cluster_mask, 'p_value'].values
-            if len(p_vals) > 0:
-                df.loc[cluster_mask, 'p_adjusted'] = _p_adjust_bh(p_vals)
-
-    # Filter significant markers
-    if 'p_adjusted' in df.columns:
-        df = df[df['p_adjusted'] < FDR]
-
-    # Sort by tfidf and limit N per cluster
-    result_markers = []
-    for cluster in unique_clusters:
-        cluster_markers = df[df['cluster'] == str(cluster)].copy()
-        if len(cluster_markers) > 0:
-            cluster_markers = cluster_markers.sort_values('tfidf', ascending=False)
-            if N is not None:
-                cluster_markers = cluster_markers.head(N)
-            result_markers.append(cluster_markers)
-
-    if result_markers:
-        final_df = pd.concat(result_markers, ignore_index=True)
-        # Remove helper columns
-        final_df = final_df.drop(['gene_idx', 'cluster_idx'], axis=1, errors='ignore')
-        return final_df
-    else:
-        return pd.DataFrame()
-
-
-def estimateNonExpressingCells(
-        sc: "SoupChannel",
-        nonExpressedGeneList: list,
-        clusters: Optional[np.ndarray] = None,
-        maximumContamination: float = 1.0,
-        FDR: float = 0.05,
-        verbose: bool = True
-) -> np.ndarray:
-    """
-    Exact R implementation working with gene sets at cluster level.
-    """
-    from scipy import stats
-
-    if clusters is None:
-        if 'clusters' in sc.metaData.columns:
-            clusters = sc.metaData['clusters'].values
-        else:
-            clusters = np.array(['0'] * sc.n_cells)
-
-    unique_clusters = np.unique(clusters)
-
-    # R: tgtGns = unique(unlist(nonExpressedGeneList))
-    tgtGns = list(set(nonExpressedGeneList))  # For single gene list, this is just the list
-
-    # Get gene indices
-    gene_indices = []
-    for gene in tgtGns:
-        try:
-            if hasattr(sc.soupProfile, 'index'):
-                gene_idx = sc.soupProfile.index.get_loc(gene)
-                gene_indices.append(gene_idx)
-            else:
-                gene_indices.append(int(gene))
-        except (KeyError, ValueError):
-            if verbose:
-                print(f"Warning: Gene {gene} not found in data")
-            continue
-
-    if len(gene_indices) == 0:
-        return np.ones(sc.n_cells, dtype=bool)
-
-    # R: dat = sc$toc[tgtGns,,drop=FALSE]
-    dat = sc.toc[gene_indices, :]
-
-    # R: cnts = do.call(rbind,lapply(nonExpressedGeneList,function(e) colSums(dat[e,,drop=FALSE])))
-    # For single gene lists, this is just the gene counts
-    cnts = dat  # For single gene case, cnts is just the gene counts
-
-    # R: exp = outer(sc$soupProfile[tgtGns,'est'],sc$metaData$nUMIs*maximumContamination)
-    soup_est = sc.soupProfile.iloc[gene_indices]['est'].values
-    cell_nUMIs = sc.metaData['nUMIs'].values
-    exp = np.outer(soup_est, cell_nUMIs * maximumContamination)
-
-    # R: s = split(names(clusters),clusters)
-    cluster_cell_dict = {}
-    for i, cluster in enumerate(clusters):
-        if cluster not in cluster_cell_dict:
-            cluster_cell_dict[cluster] = []
-        cluster_cell_dict[cluster].append(i)
-
-    # R: clustExp = ppois(cnts-1,exp,lower.tail=FALSE)
-    # Convert sparse to dense for easier manipulation
-    cnts_dense = cnts.toarray() if hasattr(cnts, 'toarray') else cnts
-
-    # Calculate p-values for each gene/cell combination
-    with np.errstate(invalid='ignore', divide='ignore'):
-        clustExp = np.where(exp > 0, 1 - stats.poisson.cdf(cnts_dense - 1, exp),
-                            np.where(cnts_dense > 0, 0.0, 1.0))
-
-    # R: clustExp = t(apply(clustExp,1,p.adjust,method='BH'))
-    # Apply FDR correction across cells for each gene
-    for gene_idx in range(clustExp.shape[0]):
-        clustExp[gene_idx, :] = _p_adjust_bh(clustExp[gene_idx, :])
-
-    # R: clustExp = do.call(rbind,lapply(s,function(e) apply(clustExp[,e,drop=FALSE],1,min)))
-    # For each cluster, get minimum p-value across cells in that cluster for each gene
-    cluster_pvals = np.zeros((len(gene_indices), len(unique_clusters)))
-
-    for j, cluster in enumerate(unique_clusters):
-        cell_indices_in_cluster = cluster_cell_dict[cluster]
-        if len(cell_indices_in_cluster) > 0:
-            # Get minimum p-value across cells in this cluster for each gene
-            cluster_subset = clustExp[:, cell_indices_in_cluster]
-            cluster_pvals[:, j] = np.min(cluster_subset, axis=1)
-        else:
-            cluster_pvals[:, j] = 1.0
-
-    # R: clustExp = clustExp>=FDR
-    cluster_passes = cluster_pvals >= FDR
-
-    # R: clustExp = clustExp[match(clusters,rownames(clustExp)),,drop=FALSE]
-    # Expand back to cell level - if cluster passes for a gene, all cells in cluster pass
-    # A cell is usable only if its cluster passes for all genes
-    use_cells = cluster_passes.all(axis=0)[np.searchsorted(unique_clusters, clusters)]
-
-    return use_cells
