@@ -1,6 +1,6 @@
 """soupx-python vs R SoupX on identical inputs, plus cross-species ground truth.
 
-Usage: python parity.py OUTDIR   (after prepare_hgmm.py and run_soupx.R; writes results.json, validation.png)
+Usage: python parity.py OUTDIR [--figure-only]   (after prepare_hgmm.py and run_soupx.R;\nwrites results.json and validation.png; --figure-only redraws the figure from results.json)
 """
 import json, sys, time
 import numpy as np, pandas as pd, scipy.sparse as sp
@@ -74,25 +74,45 @@ def run(d):
 
 def figure(res, path):
     import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.4))
-    steps, x = list(res["seconds"]), np.arange(len(res["seconds"]))
-    for k, (lab, col) in enumerate([("R", "#999999"), ("Py", "#3b6ea8")]):
-        ax1.bar(x + (k - 0.5) * 0.38, [res["seconds"][s][lab] for s in steps], 0.38, label={"R": "R SoupX", "Py": "soupx-python"}[lab], color=col)
-    ax1.set_xticks(x, steps, rotation=20); ax1.set_yscale("log"); ax1.set_ylabel("runtime [s]")
-    ax1.set_ylim(top=8 * max(v[k] for v in res["seconds"].values() for k in v)); ax1.legend(frameon=False, fontsize=8, ncol=2)
-    ax1.set_title("a  Runtime (identical results)", loc="left", fontsize=10)
-    gt = res["ground_truth"]; x = np.arange(len(METHODS))
-    ax2.bar(x - 0.19, [gt[m]["cross_removed"] for m in METHODS], 0.38, color="#3b6ea8", label="known ambient removed")
-    ax2.bar(x + 0.19, [gt[m]["cross_share_of_removed"] for m in METHODS], 0.38, color="#e0a040", label="cross-species share of removed")
-    ax2.scatter(x + 0.19, [gt[m]["expected_share"] for m in METHODS], marker="_", s=400, color="k", label="share expected for pure soup", zorder=3)
-    ax2.set_xticks(x, METHODS, rotation=20); ax2.set_ylim(0, 1.3); ax2.legend(frameon=False, fontsize=7, loc="upper left")
-    ax2.set_title("b  Cross-species ground truth", loc="left", fontsize=10)
-    ax2.text(0.98, 0.97, f"rho SoupX {res['rho_Py']:.3f}\nrho cross-species {gt['rho_true']:.3f}", transform=ax2.transAxes, ha="right", va="top", fontsize=8)
-    fig.tight_layout(); fig.savefig(path, dpi=150)
+    plt.rcParams.update({"font.size": 8, "axes.spines.top": False, "axes.spines.right": False})
+    fig, axs = plt.subplots(1, 3, figsize=(10.5, 3.1), gridspec_kw={"width_ratios": [1.4, 1, 1]})
+    steps, gt = list(res["seconds"]), res["ground_truth"]
+    x, w = np.arange(len(steps)), 0.38
+    r, p = (np.array([res["seconds"][s][k] for s in steps]) for k in ("R", "Py"))
+    axs[0].bar(x - w / 2, r, w, color="#b0b0b0", label="R SoupX 1.6.2")
+    axs[0].bar(x + w / 2, p, w, color="#3b6ea8", label="soupx-python")
+    for xi, ri, pi in zip(x, r, p):
+        axs[0].text(xi, max(ri, pi) * 1.25, f"{ri / pi:.1f}x" if ri >= pi else f"{pi / ri:.1f}x slower",
+                    ha="center", fontsize=7)
+    axs[0].set(yscale="log", ylabel="runtime [s]", ylim=(3, max(r.max(), p.max()) * 4))
+    axs[0].set_xticks(x, steps)
+    axs[0].legend(frameon=False, loc="upper left")
+    axs[0].set_title("a  Runtime, identical results", loc="left", fontweight="bold")
+    cols = ["#3b6ea8", "#e0a040", "#6aa56a"]
+    x = np.arange(len(METHODS))
+    for ax, key, title in [(axs[1], "cross_removed", "b  Known ambient removed"),
+                           (axs[2], "cross_share_of_removed", "c  Cross-species share of removal")]:
+        v = [gt[m][key] for m in METHODS]
+        ax.bar(x, v, 0.6, color=cols)
+        for xi, vi in zip(x, v):
+            ax.text(xi, vi - 0.03, f"{vi:.0%}", ha="center", va="top", fontsize=7, color="white", fontweight="bold")
+        ax.set_xticks(x, METHODS)
+        ax.set_ylim(0, 1.15)
+        ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+        ax.set_title(title, loc="left", fontweight="bold")
+    for xi, m in zip(x, METHODS):
+        axs[2].hlines(gt[m]["expected_share"], xi - 0.4, xi + 0.4, colors="k", linestyles="--", lw=1,
+                      label="expected if all removed\ncounts were ambient" if m == METHODS[0] else None)
+    axs[2].legend(frameon=False, loc="upper left", fontsize=7)
+    axs[1].text(0.98, 0.98, f"rho SoupX {res['rho_Py']:.3f}\nrho cross-species {gt['rho_true']:.3f}",
+                transform=axs[1].transAxes, fontsize=7, ha="right", va="top", color="0.3")
+    fig.tight_layout(); fig.savefig(path, dpi=200)
 
 
 if __name__ == "__main__":
     d = sys.argv[1]
+    if "--figure-only" in sys.argv:
+        figure(json.load(open(f"{d}/results.json")), f"{d}/validation.png"); sys.exit()
     res = run(d)
     json.dump(res, open(f"{d}/results.json", "w"), indent=1, default=float)
     print(json.dumps(res, indent=1, default=float))
