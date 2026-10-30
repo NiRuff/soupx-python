@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 from scipy import sparse, stats
 from typing import TYPE_CHECKING, Literal, Optional, Union
-#from statsmodels.stats.multitest import multipletests
 
 if TYPE_CHECKING:
     from .core import SoupChannel

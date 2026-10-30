@@ -4,11 +4,15 @@ Contamination estimation functions matching R SoupX exactly.
 import numpy as np
 import pandas as pd
 from scipy import sparse, stats
-from statsmodels.stats.multitest import multipletests
 from typing import Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .core import SoupChannel
+
+
+def _p_adjust_bh(p):
+    """Benjamini-Hochberg adjustment, equivalent to R's p.adjust(method='BH')."""
+    return stats.false_discovery_control(np.clip(p, 0, 1), method="bh")
 
 
 def autoEstCont(sc, **kwargs):
@@ -255,7 +259,6 @@ def quickMarkers(
     from scipy import sparse
     import numpy as np
     import pandas as pd
-    from statsmodels.stats.multitest import multipletests
 
     # Convert to coordinate format like R's TsparseMatrix
     toc_coo = toc.tocoo()
@@ -357,8 +360,7 @@ def quickMarkers(
         if np.any(cluster_mask):
             p_vals = df.loc[cluster_mask, 'p_value'].values
             if len(p_vals) > 0:
-                _, p_adjusted, _, _ = multipletests(p_vals, alpha=FDR, method='fdr_bh')
-                df.loc[cluster_mask, 'p_adjusted'] = p_adjusted
+                df.loc[cluster_mask, 'p_adjusted'] = _p_adjust_bh(p_vals)
 
     # Filter significant markers
     if 'p_adjusted' in df.columns:
@@ -395,7 +397,6 @@ def estimateNonExpressingCells(
     Exact R implementation working with gene sets at cluster level.
     """
     from scipy import stats
-    from statsmodels.stats.multitest import multipletests
 
     if clusters is None:
         if 'clusters' in sc.metaData.columns:
@@ -461,9 +462,7 @@ def estimateNonExpressingCells(
     # R: clustExp = t(apply(clustExp,1,p.adjust,method='BH'))
     # Apply FDR correction across cells for each gene
     for gene_idx in range(clustExp.shape[0]):
-        _, clustExp[gene_idx, :], _, _ = multipletests(
-            clustExp[gene_idx, :], alpha=FDR, method='fdr_bh'
-        )
+        clustExp[gene_idx, :] = _p_adjust_bh(clustExp[gene_idx, :])
 
     # R: clustExp = do.call(rbind,lapply(s,function(e) apply(clustExp[,e,drop=FALSE],1,min)))
     # For each cluster, get minimum p-value across cells in that cluster for each gene

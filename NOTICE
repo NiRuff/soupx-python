@@ -1,0 +1,9 @@
+soupx-python is a Python port of the R package SoupX
+(https://github.com/constantAmateur/SoupX), Copyright (C) Matthew D. Young,
+distributed under the GNU General Public License version 2. As a derivative
+work, soupx-python is distributed under the same license (see LICENSE).
+
+If you use soupx-python, please cite the original method:
+Young, M.D. & Behjati, S. SoupX removes ambient RNA contamination from
+droplet-based single-cell RNA sequencing data. GigaScience 9, giaa151 (2020).
+https://doi.org/10.1093/gigascience/giaa151

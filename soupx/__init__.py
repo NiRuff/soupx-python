@@ -4,7 +4,7 @@ SoupX Python Implementation
 A Python port of the SoupX R package for removing ambient RNA contamination
 from droplet-based single-cell RNA sequencing data.
 
-This implementation mirrors the R package behavior exactly.
+Original method and R package: Young, M.D. & Behjati, S. (2020), GigaScience 9, giaa151.
 """
 
 import numpy as np
@@ -69,8 +69,10 @@ def load10X(dataDir, **kwargs):
     SoupChannel
         Initialized SoupChannel object
     """
-    import scanpy as sc
-    import os
+    try:
+        import scanpy as sc
+    except ImportError as e:
+        raise ImportError("load10X needs scanpy: pip install 'soupx-python[scanpy]'") from e
     from pathlib import Path
 
     data_path = Path(dataDir)
