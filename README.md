@@ -2,7 +2,7 @@
 
 [![PyPI version](https://badge.fury.io/py/soupx-python.svg)](https://pypi.org/project/soupx-python/)
 [![tests](https://github.com/NiRuff/soupx-python/actions/workflows/tests.yml/badge.svg)](https://github.com/NiRuff/soupx-python/actions/workflows/tests.yml)
-[![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
+[![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://github.com/NiRuff/soupx-python/blob/master/LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
 A Python port of [SoupX](https://github.com/constantAmateur/SoupX) (Young & Behjati, 2020) for removing
@@ -60,7 +60,7 @@ or set ρ directly with `s.set_contamination_fraction(0.1)`.
 Compared against R SoupX 1.6.2 (R 4.6.1) on the 10x Genomics dataset *10k 1:1 Mixture of Human HEK293T and
 Mouse NIH3T3 cells, 3' v3.1, Chromium Controller* (9,588 single-species cells after removing human/mouse
 doublets, 68,886 genes, 14 Leiden clusters), with identical inputs and default parameters. Scripts and
-instructions: [`validation/`](validation/).
+instructions: [`validation/`](https://github.com/NiRuff/soupx-python/tree/master/validation).
 
 | | R SoupX | soupx-python |
 |---|---|---|
@@ -79,7 +79,7 @@ of the counts removed by `soupOnly`, 99% are cross-species, versus 45% for the o
 expected if everything removed were ambient). These are properties of SoupX itself, as R gives the same
 numbers.
 
-![validation](docs/validation_hgmm10k.png)
+![validation](https://raw.githubusercontent.com/NiRuff/soupx-python/master/docs/validation_hgmm10k.png)
 
 `tests/` checks R parity on a small synthetic channel with reference values computed in R, so this is
 re-tested on every change.
@@ -98,11 +98,11 @@ Please cite the original method:
 > Young, M.D., Behjati, S. SoupX removes ambient RNA contamination from droplet-based single-cell RNA
 > sequencing data. *GigaScience* 9, giaa151 (2020). https://doi.org/10.1093/gigascience/giaa151
 
-and, if you use this port, the software itself (see [CITATION.cff](CITATION.cff)).
+and, if you use this port, the software itself (see [CITATION.cff](https://github.com/NiRuff/soupx-python/blob/master/CITATION.cff)).
 
 Related: [decontx-python](https://github.com/NiRuff/decontx-python), a validated port of DecontX, which does
 not need empty droplets.
 
 ## License
 
-GPL-2.0, as SoupX (see [LICENSE](LICENSE) and [NOTICE](NOTICE)).
+GPL-2.0, as SoupX (see [LICENSE](https://github.com/NiRuff/soupx-python/blob/master/LICENSE) and [NOTICE](https://github.com/NiRuff/soupx-python/blob/master/NOTICE)).

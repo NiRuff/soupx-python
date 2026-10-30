@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.4.0"
 description = "Python implementation of SoupX for removing ambient RNA contamination from droplet-based single-cell RNA sequencing data"
 readme = {file = "README.md", content-type = "text/markdown"}
 requires-python = ">=3.10"
-license = {text = "GPL-2.0"}
+license = "GPL-2.0-only"
+license-files = ["LICENSE", "NOTICE"]
 maintainers = [{name = "Nicolas Ruffini", email = "nicolas.ruffini@posteo.de"}]
 authors = [
     {name = "Nicolas Ruffini", email = "nicolas.ruffini@posteo.de"},
@@ -18,7 +19,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
-    "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
